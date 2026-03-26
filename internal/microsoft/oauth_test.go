@@ -94,6 +94,39 @@ func TestDeleteToken(t *testing.T) {
 	}
 }
 
+func TestIsPersonalMicrosoftAccount(t *testing.T) {
+	tests := []struct {
+		email    string
+		personal bool
+	}{
+		{"user@hotmail.com", true},
+		{"user@outlook.com", true},
+		{"user@live.com", true},
+		{"user@msn.com", true},
+		{"user@hotmail.co.uk", true},
+		{"user@company.com", false},
+		{"user@5.life", false},
+		{"user@gmail.com", false},
+	}
+	for _, tt := range tests {
+		got := isPersonalMicrosoftAccount(tt.email)
+		if got != tt.personal {
+			t.Errorf("isPersonalMicrosoftAccount(%q) = %v, want %v", tt.email, got, tt.personal)
+		}
+	}
+}
+
+func TestScopesForEmail(t *testing.T) {
+	orgScopes := scopesForEmail("user@company.com")
+	if orgScopes[0] != ScopeIMAPOrg {
+		t.Errorf("org scope = %q, want %q", orgScopes[0], ScopeIMAPOrg)
+	}
+	personalScopes := scopesForEmail("user@hotmail.com")
+	if personalScopes[0] != ScopeIMAPPersonal {
+		t.Errorf("personal scope = %q, want %q", personalScopes[0], ScopeIMAPPersonal)
+	}
+}
+
 func TestSanitizeEmail(t *testing.T) {
 	tests := []struct {
 		input string

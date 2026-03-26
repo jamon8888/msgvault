@@ -22,17 +22,45 @@ import (
 
 const (
 	DefaultTenant = "common"
-	ScopeIMAP     = "https://outlook.office365.com/IMAP.AccessAsUser.All"
+
+	// ScopeIMAPOrg is the IMAP scope for organizational (O365) accounts.
+	ScopeIMAPOrg = "https://outlook.office365.com/IMAP.AccessAsUser.All"
+	// ScopeIMAPPersonal is the IMAP scope for personal Microsoft accounts
+	// (hotmail.com, outlook.com, live.com, etc.).
+	ScopeIMAPPersonal = "https://outlook.office.com/IMAP.AccessAsUser.All"
 
 	redirectPort = "8089"
 	callbackPath = "/callback/microsoft"
 )
 
-var Scopes = []string{
-	ScopeIMAP,
-	"offline_access",
-	"openid",
-	"email",
+// ScopeIMAP is the organizational IMAP scope (kept for backward compatibility).
+var ScopeIMAP = ScopeIMAPOrg
+
+// scopesForEmail returns the OAuth scopes appropriate for the given email.
+// Personal Microsoft accounts use a different IMAP resource than org accounts.
+func scopesForEmail(email string) []string {
+	imapScope := ScopeIMAPOrg
+	if isPersonalMicrosoftAccount(email) {
+		imapScope = ScopeIMAPPersonal
+	}
+	return []string{imapScope, "offline_access", "openid", "email"}
+}
+
+// isPersonalMicrosoftAccount returns true for common consumer Microsoft domains.
+func isPersonalMicrosoftAccount(email string) bool {
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	domain := strings.ToLower(parts[1])
+	switch domain {
+	case "hotmail.com", "outlook.com", "live.com", "msn.com",
+		"hotmail.co.uk", "hotmail.fr", "hotmail.de", "hotmail.es", "hotmail.it",
+		"live.co.uk", "live.fr", "live.de", "live.it",
+		"outlook.co.uk", "outlook.fr", "outlook.de", "outlook.es", "outlook.it":
+		return true
+	}
+	return false
 }
 
 type TokenMismatchError struct {
@@ -50,7 +78,7 @@ type Manager struct {
 	tokensDir string
 	logger    *slog.Logger
 
-	browserFlowFn func(ctx context.Context, email string) (*oauth2.Token, error)
+	browserFlowFn func(ctx context.Context, email string, scopes []string) (*oauth2.Token, error)
 }
 
 func NewManager(clientID, tenantID, tokensDir string, logger *slog.Logger) *Manager {
@@ -68,7 +96,7 @@ func NewManager(clientID, tenantID, tokensDir string, logger *slog.Logger) *Mana
 	}
 }
 
-func (m *Manager) oauthConfig() *oauth2.Config {
+func (m *Manager) oauthConfig(scopes []string) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID: m.clientID,
 		Endpoint: oauth2.Endpoint{
@@ -76,23 +104,24 @@ func (m *Manager) oauthConfig() *oauth2.Config {
 			TokenURL: fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", m.tenantID),
 		},
 		RedirectURL: "http://localhost:" + redirectPort + callbackPath,
-		Scopes:      Scopes,
+		Scopes:      scopes,
 	}
 }
 
 func (m *Manager) Authorize(ctx context.Context, email string) error {
+	scopes := scopesForEmail(email)
 	flow := m.browserFlow
 	if m.browserFlowFn != nil {
 		flow = m.browserFlowFn
 	}
-	token, err := flow(ctx, email)
+	token, err := flow(ctx, email, scopes)
 	if err != nil {
 		return err
 	}
 	if _, err := m.resolveTokenEmail(ctx, email, token); err != nil {
 		return err
 	}
-	return m.saveToken(email, token, Scopes)
+	return m.saveToken(email, token, scopes)
 }
 
 // TokenSource returns a function that provides fresh access tokens.
@@ -103,7 +132,11 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 		return nil, fmt.Errorf("no valid token for %s: %w", email, err)
 	}
 
-	cfg := m.oauthConfig()
+	scopes := tf.Scopes
+	if len(scopes) == 0 {
+		scopes = scopesForEmail(email)
+	}
+	cfg := m.oauthConfig(scopes)
 	ts := cfg.TokenSource(ctx, &tf.Token)
 
 	return func(callCtx context.Context) (string, error) {
@@ -121,8 +154,8 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 	}, nil
 }
 
-func (m *Manager) browserFlow(ctx context.Context, email string) (*oauth2.Token, error) {
-	cfg := m.oauthConfig()
+func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string) (*oauth2.Token, error) {
+	cfg := m.oauthConfig(scopes)
 
 	// PKCE (required by Azure AD for public clients)
 	verifierBytes := make([]byte, 32)
