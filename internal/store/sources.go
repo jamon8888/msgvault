@@ -35,6 +35,34 @@ func (s *Store) GetSourcesByIdentifier(
 	return sources, rows.Err()
 }
 
+// GetSourcesByDisplayName returns all sources with the given display name.
+// Use this as a fallback when looking up IMAP sources by their human-readable
+// email address rather than the full imaps:// identifier.
+func (s *Store) GetSourcesByDisplayName(displayName string) ([]*Source, error) {
+	rows, err := s.db.Query(`
+		SELECT id, source_type, identifier, display_name,
+		       google_user_id, last_sync_at, sync_cursor, sync_config,
+		       created_at, updated_at
+		FROM sources
+		WHERE display_name = ?
+		ORDER BY source_type
+	`, displayName)
+	if err != nil {
+		return nil, fmt.Errorf("query sources by display name: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var sources []*Source
+	for rows.Next() {
+		src, err := scanSource(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan source: %w", err)
+		}
+		sources = append(sources, src)
+	}
+	return sources, rows.Err()
+}
+
 // RemoveSource deletes a source and all its associated data.
 // FTS5 rows are cleaned up explicitly (no FK cascade for virtual tables).
 // CASCADE handles conversations, messages, labels, attachments, sync state.

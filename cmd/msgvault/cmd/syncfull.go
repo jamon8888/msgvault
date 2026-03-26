@@ -95,6 +95,12 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("look up source: %w", err)
 			}
+			if len(allMatches) == 0 {
+				allMatches, err = s.GetSourcesByDisplayName(args[0])
+				if err != nil {
+					return fmt.Errorf("look up source by display name: %w", err)
+				}
+			}
 			for _, src := range allMatches {
 				if src.SourceType == "gmail" || src.SourceType == "imap" {
 					sources = append(sources, src)

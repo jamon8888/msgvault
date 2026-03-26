@@ -100,6 +100,12 @@ Examples:
 			if lookupErr != nil {
 				return fmt.Errorf("look up source: %w", lookupErr)
 			}
+			if len(allMatches) == 0 {
+				allMatches, lookupErr = s.GetSourcesByDisplayName(args[0])
+				if lookupErr != nil {
+					return fmt.Errorf("look up source by display name: %w", lookupErr)
+				}
+			}
 			for _, src := range allMatches {
 				switch src.SourceType {
 				case "gmail":
