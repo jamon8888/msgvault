@@ -221,7 +221,7 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 		if err != nil {
 			return "", fmt.Errorf("refresh Microsoft token: %w", err)
 		}
-		if tok.AccessToken != tf.Token.AccessToken {
+		if tok.AccessToken != tf.AccessToken {
 			if saveErr := m.saveToken(email, tok, tf.Scopes, tf.TenantID); saveErr != nil {
 				m.logger.Warn("failed to save refreshed token", "email", email, "error", saveErr)
 			}
@@ -264,23 +264,23 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("state") != state {
 			errChan <- fmt.Errorf("state mismatch: possible CSRF attack")
-			fmt.Fprintf(w, "Error: state mismatch")
+			_, _ = fmt.Fprintf(w, "Error: state mismatch")
 			return
 		}
 		if errMsg := r.URL.Query().Get("error"); errMsg != "" {
 			desc := r.URL.Query().Get("error_description")
-			errChan <- fmt.Errorf("Microsoft OAuth error: %s: %s", errMsg, desc)
-			fmt.Fprintf(w, "Error: %s", desc)
+			errChan <- fmt.Errorf("microsoft OAuth error: %s: %s", errMsg, desc)
+			_, _ = fmt.Fprintf(w, "Error: %s", desc)
 			return
 		}
 		code := r.URL.Query().Get("code")
 		if code == "" {
 			errChan <- fmt.Errorf("no code in callback")
-			fmt.Fprintf(w, "Error: no authorization code received")
+			_, _ = fmt.Fprintf(w, "Error: no authorization code received")
 			return
 		}
 		codeChan <- code
-		fmt.Fprintf(w, "Authorization successful! You can close this window.")
+		_, _ = fmt.Fprintf(w, "Authorization successful! You can close this window.")
 	})
 
 	server := &http.Server{Addr: "localhost:" + redirectPort, Handler: mux}

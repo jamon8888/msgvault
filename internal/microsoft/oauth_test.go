@@ -379,12 +379,13 @@ func TestAuthorize_ScopeCorrection(t *testing.T) {
 			"email": "user@custom-domain.com",
 			"tid":   consumerTID,
 		})
-		if callCount == 1 {
+		switch callCount {
+		case 1:
 			// First call: should have org scope (domain-based guess).
 			if scopes[0] != ScopeIMAPOrg {
 				t.Errorf("first call scope = %q, want org scope", scopes[0])
 			}
-		} else if callCount == 2 {
+		case 2:
 			// Second call: should have personal scope (corrected via tid).
 			if scopes[0] != ScopeIMAPPersonal {
 				t.Errorf("second call scope = %q, want personal scope", scopes[0])
