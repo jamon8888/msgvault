@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/oauth2"
@@ -586,4 +587,84 @@ func TestTokenSource_NoTenantIDSkipsValidation(t *testing.T) {
 	if ts == nil {
 		t.Fatal("TokenSource returned nil")
 	}
+}
+
+func TestOAuthConfigWithTenant(t *testing.T) {
+	m := &Manager{
+		clientID: "test-client",
+		tenantID: "common",
+	}
+	cfg := m.oauthConfigWithTenant("my-org", []string{"IMAP.AccessAsUser.All"})
+	if !strings.Contains(cfg.Endpoint.AuthURL, "my-org") {
+		t.Errorf("AuthURL = %q, want it to contain %q", cfg.Endpoint.AuthURL, "my-org")
+	}
+	if !strings.Contains(cfg.Endpoint.TokenURL, "my-org") {
+		t.Errorf("TokenURL = %q, want it to contain %q", cfg.Endpoint.TokenURL, "my-org")
+	}
+	if strings.Contains(cfg.Endpoint.AuthURL, "common") {
+		t.Errorf("AuthURL = %q, should not contain %q", cfg.Endpoint.AuthURL, "common")
+	}
+}
+
+func TestTokenSource_PersistedTenantOverridesManager(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: dir,
+		logger:    slog.Default(),
+	}
+
+	// Save token with a specific tenant ID (simulating post-authorization state).
+	token := &oauth2.Token{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		TokenType:    "Bearer",
+	}
+	if err := m.saveToken("user@company.com", token, []string{ScopeIMAPOrg, "offline_access"}, "my-org-tenant"); err != nil {
+		t.Fatal(err)
+	}
+
+	// TokenSource should succeed and use "my-org-tenant", not "common".
+	ts, err := m.TokenSource(t.Context(), "user@company.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ts == nil {
+		t.Fatal("TokenSource returned nil")
+	}
+}
+
+func TestTokenSource_ConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: dir,
+		logger:    slog.Default(),
+	}
+
+	token := &oauth2.Token{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		TokenType:    "Bearer",
+	}
+	if err := m.saveToken("user@outlook.com", token, []string{ScopeIMAPPersonal, "offline_access"}, MicrosoftConsumerTenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	fn, err := m.TokenSource(t.Context(), "user@outlook.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = fn(t.Context())
+		}()
+	}
+	wg.Wait()
 }

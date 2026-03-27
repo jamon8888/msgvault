@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/wesm/msgvault/internal/fileutil"
@@ -124,11 +125,15 @@ func NewManager(clientID, tenantID, tokensDir string, logger *slog.Logger) *Mana
 }
 
 func (m *Manager) oauthConfig(scopes []string) *oauth2.Config {
+	return m.oauthConfigWithTenant(m.tenantID, scopes)
+}
+
+func (m *Manager) oauthConfigWithTenant(tenantID string, scopes []string) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID: m.clientID,
 		Endpoint: oauth2.Endpoint{
-			AuthURL:  fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/authorize", m.tenantID),
-			TokenURL: fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", m.tenantID),
+			AuthURL:  fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/authorize", tenantID),
+			TokenURL: fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", tenantID),
 		},
 		RedirectURL: "http://localhost:" + redirectPort + callbackPath,
 		Scopes:      scopes,
@@ -188,7 +193,13 @@ func (m *Manager) doBrowserFlow(ctx context.Context, email string, scopes []stri
 }
 
 // TokenSource returns a function that provides fresh access tokens.
-// Suitable for passing to imap.WithTokenSource.
+// Suitable for passing to imap.WithTokenSource. The returned function
+// is safe for concurrent use.
+//
+// The underlying oauth2.TokenSource uses the context passed to
+// TokenSource (not the per-call context) for HTTP refresh requests.
+// Callers should pass a context that outlives all calls to the
+// returned function.
 func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.Context) (string, error), error) {
 	tf, err := m.loadTokenFile(email)
 	if err != nil {
@@ -213,20 +224,37 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 		}
 	}
 
-	cfg := m.oauthConfig(scopes)
+	refreshTenant := m.tenantID
+	if tf.TenantID != "" {
+		refreshTenant = tf.TenantID
+	}
+	cfg := m.oauthConfigWithTenant(refreshTenant, scopes)
 	ts := cfg.TokenSource(ctx, &tf.Token)
+
+	var (
+		mu              sync.Mutex
+		lastAccessToken = tf.AccessToken
+	)
 
 	return func(callCtx context.Context) (string, error) {
 		tok, err := ts.Token()
 		if err != nil {
 			return "", fmt.Errorf("refresh Microsoft token: %w", err)
 		}
-		if tok.AccessToken != tf.AccessToken {
-			if saveErr := m.saveToken(email, tok, tf.Scopes, tf.TenantID); saveErr != nil {
+
+		mu.Lock()
+		changed := tok.AccessToken != lastAccessToken
+		if changed {
+			lastAccessToken = tok.AccessToken
+		}
+		mu.Unlock()
+
+		if changed {
+			if saveErr := m.saveToken(email, tok, scopes, tf.TenantID); saveErr != nil {
 				m.logger.Warn("failed to save refreshed token", "email", email, "error", saveErr)
 			}
-			tf.Token = *tok
 		}
+
 		return tok.AccessToken, nil
 	}, nil
 }
