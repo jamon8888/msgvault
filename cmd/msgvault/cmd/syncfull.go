@@ -309,7 +309,11 @@ func runFullSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Manager, s
 
 	// Run sync
 	startTime := time.Now()
-	fmt.Printf("Starting full sync for %s\n", src.Identifier)
+	displayID := src.Identifier
+	if src.DisplayName.Valid && src.DisplayName.String != "" {
+		displayID = src.DisplayName.String
+	}
+	fmt.Printf("Starting full sync for %s\n", displayID)
 	if query != "" && src.SourceType != "imap" {
 		fmt.Printf("Query: %s\n", query)
 	}
@@ -350,7 +354,7 @@ func runFullSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Manager, s
 
 	elapsed := time.Since(startTime)
 	logger.Info("sync completed",
-		"identifier", src.Identifier,
+		"identifier", displayID,
 		"messages_added", summary.MessagesAdded,
 		"elapsed", elapsed,
 	)
