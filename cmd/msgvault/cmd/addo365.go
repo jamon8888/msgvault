@@ -96,7 +96,7 @@ Examples:
 		fmt.Printf("  Identifier: %s\n", identifier)
 		fmt.Println()
 		fmt.Println("You can now run:")
-		fmt.Printf("  msgvault sync-full %s\n", identifier)
+		fmt.Printf("  msgvault sync-full %s\n", email)
 
 		return nil
 	},
