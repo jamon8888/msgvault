@@ -401,6 +401,7 @@ type tokenFile struct {
 	oauth2.Token
 	Scopes   []string `json:"scopes,omitempty"`
 	TenantID string   `json:"tenant_id,omitempty"`
+	ClientID string   `json:"client_id,omitempty"`
 }
 
 // handleUploadToken accepts a token from a remote client and saves it.
