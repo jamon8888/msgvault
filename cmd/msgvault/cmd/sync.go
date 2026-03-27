@@ -105,6 +105,9 @@ Examples:
 				if lookupErr != nil {
 					return fmt.Errorf("look up source by display name: %w", lookupErr)
 				}
+				if len(allMatches) > 1 {
+					return fmt.Errorf("display name %q is ambiguous (%d matches) — use the full identifier instead", args[0], len(allMatches))
+				}
 			}
 			for _, src := range allMatches {
 				switch src.SourceType {

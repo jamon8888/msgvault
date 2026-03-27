@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"golang.org/x/oauth2"
@@ -30,7 +31,7 @@ func TestSaveAndLoadToken(t *testing.T) {
 	}
 	scopes := []string{"IMAP.AccessAsUser.All", "offline_access"}
 
-	if err := m.saveToken("user@example.com", token, scopes); err != nil {
+	if err := m.saveToken("user@example.com", token, scopes, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -68,7 +69,7 @@ func TestHasToken(t *testing.T) {
 	}
 
 	token := &oauth2.Token{AccessToken: "test"}
-	if err := m.saveToken("user@example.com", token, nil); err != nil {
+	if err := m.saveToken("user@example.com", token, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	if !m.HasToken("user@example.com") {
@@ -81,7 +82,7 @@ func TestDeleteToken(t *testing.T) {
 	m := &Manager{tokensDir: dir}
 
 	token := &oauth2.Token{AccessToken: "test"}
-	if err := m.saveToken("user@example.com", token, nil); err != nil {
+	if err := m.saveToken("user@example.com", token, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.DeleteToken("user@example.com"); err != nil {
@@ -241,6 +242,7 @@ func TestResolveTokenEmail_Match(t *testing.T) {
 		clientID:        "test-client",
 		tenantID:        "common",
 		tokensDir:       t.TempDir(),
+		logger:          slog.Default(),
 		verifyIDTokenFn: testVerifyFn,
 	}
 	idToken := makeIDToken(map[string]any{"email": "user@example.com", "tid": "org-tid"})
@@ -285,6 +287,7 @@ func TestResolveTokenEmail_FallbackToUPN(t *testing.T) {
 		clientID:        "test-client",
 		tenantID:        "common",
 		tokensDir:       t.TempDir(),
+		logger:          slog.Default(),
 		verifyIDTokenFn: testVerifyFn,
 	}
 	idToken := makeIDToken(map[string]any{"preferred_username": "user@example.com"})
@@ -301,8 +304,9 @@ func TestResolveTokenEmail_FallbackToUPN(t *testing.T) {
 }
 
 func TestResolveTokenEmail_UPNDiffersFromExpected(t *testing.T) {
-	// Org accounts where UPN differs from SMTP address must now fail
-	// to prevent account-binding bypass (login_hint is advisory).
+	// When "email" claim is absent and UPN differs from expected address,
+	// resolveTokenEmail should accept the user-entered email (not the UPN)
+	// because Entra UPN can legitimately differ from the SMTP mailbox address.
 	m := &Manager{
 		clientID:        "test-client",
 		tenantID:        "common",
@@ -317,12 +321,15 @@ func TestResolveTokenEmail_UPNDiffersFromExpected(t *testing.T) {
 	token := (&oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}).
 		WithExtra(map[string]any{"id_token": idToken})
 
-	_, _, err := m.resolveTokenEmail(t.Context(), "john@company.com", token, "test-nonce")
-	if err == nil {
-		t.Fatal("expected TokenMismatchError for UPN mismatch")
+	actual, claims, err := m.resolveTokenEmail(t.Context(), "john@company.com", token, "test-nonce")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, ok := err.(*TokenMismatchError); !ok {
-		t.Errorf("expected *TokenMismatchError, got %T: %v", err, err)
+	if actual != "john@company.com" {
+		t.Errorf("actual = %q, want user-entered email %q", actual, "john@company.com")
+	}
+	if claims.TenantID != "org-tenant-id" {
+		t.Errorf("TenantID = %q, want %q", claims.TenantID, "org-tenant-id")
 	}
 }
 
@@ -457,5 +464,125 @@ func TestAuthorize_NoScopeCorrection(t *testing.T) {
 	}
 	if len(tf.Scopes) == 0 || tf.Scopes[0] != ScopeIMAPPersonal {
 		t.Errorf("saved scopes[0] = %q, want %q", tf.Scopes[0], ScopeIMAPPersonal)
+	}
+}
+
+func TestAuthorize_PersistsTenantID(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       dir,
+		logger:          slog.Default(),
+		verifyIDTokenFn: testVerifyFn,
+	}
+
+	m.browserFlowFn = func(ctx context.Context, email string, scopes []string) (*oauth2.Token, string, error) {
+		idToken := makeIDToken(map[string]any{
+			"email": "user@company.com",
+			"tid":   "org-tenant-123",
+		})
+		tok := (&oauth2.Token{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			TokenType:    "Bearer",
+		}).WithExtra(map[string]any{"id_token": idToken})
+		return tok, "test-nonce", nil
+	}
+
+	if err := m.Authorize(t.Context(), "user@company.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	tf, err := m.loadTokenFile("user@company.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tf.TenantID != "org-tenant-123" {
+		t.Errorf("TenantID = %q, want %q", tf.TenantID, "org-tenant-123")
+	}
+}
+
+func TestTokenSource_StaleScopeReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: dir,
+		logger:    slog.Default(),
+	}
+
+	// Save a token with org IMAP scope but consumer tenant ID (stale).
+	token := &oauth2.Token{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		TokenType:    "Bearer",
+	}
+	if err := m.saveToken("user@custom.com", token, []string{ScopeIMAPOrg, "offline_access"}, MicrosoftConsumerTenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := m.TokenSource(t.Context(), "user@custom.com")
+	if err == nil {
+		t.Fatal("expected error for stale scope")
+	}
+	if !strings.Contains(err.Error(), "stale IMAP scope") {
+		t.Errorf("error = %q, want it to mention stale IMAP scope", err.Error())
+	}
+}
+
+func TestTokenSource_CorrectScopeSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: dir,
+		logger:    slog.Default(),
+	}
+
+	// Save a token with correct personal IMAP scope and consumer tenant ID.
+	token := &oauth2.Token{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		TokenType:    "Bearer",
+	}
+	if err := m.saveToken("user@outlook.com", token, []string{ScopeIMAPPersonal, "offline_access"}, MicrosoftConsumerTenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, err := m.TokenSource(t.Context(), "user@outlook.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ts == nil {
+		t.Fatal("TokenSource returned nil")
+	}
+}
+
+func TestTokenSource_NoTenantIDSkipsValidation(t *testing.T) {
+	// Pre-migration tokens without tenant_id should still work.
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: dir,
+		logger:    slog.Default(),
+	}
+
+	token := &oauth2.Token{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		TokenType:    "Bearer",
+	}
+	if err := m.saveToken("user@custom.com", token, []string{ScopeIMAPOrg, "offline_access"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, err := m.TokenSource(t.Context(), "user@custom.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ts == nil {
+		t.Fatal("TokenSource returned nil")
 	}
 }

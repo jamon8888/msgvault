@@ -100,6 +100,9 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("look up source by display name: %w", err)
 				}
+				if len(allMatches) > 1 {
+					return fmt.Errorf("display name %q is ambiguous (%d matches) — use the full identifier instead", args[0], len(allMatches))
+				}
 			}
 			for _, src := range allMatches {
 				if src.SourceType == "gmail" || src.SourceType == "imap" {

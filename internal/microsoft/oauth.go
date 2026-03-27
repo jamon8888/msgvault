@@ -172,7 +172,11 @@ func (m *Manager) Authorize(ctx context.Context, email string) error {
 		}
 	}
 
-	return m.saveToken(email, token, scopes)
+	tenantID := ""
+	if claims != nil {
+		tenantID = claims.TenantID
+	}
+	return m.saveToken(email, token, scopes, tenantID)
 }
 
 // doBrowserFlow dispatches to browserFlowFn (test hook) or the real browserFlow.
@@ -195,6 +199,20 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 	if len(scopes) == 0 {
 		scopes = scopesForEmail(email)
 	}
+
+	// Validate persisted scopes against tenant ID to detect stale tokens
+	// from before scope-correction was added. Tokens without a tenant_id
+	// are pre-migration and skip this check (backward compatible).
+	if tf.TenantID != "" && len(tf.Scopes) > 0 {
+		correctScope := imapScopeForTenant(tf.TenantID)
+		if tf.Scopes[0] != correctScope {
+			return nil, fmt.Errorf(
+				"token for %s has stale IMAP scope %q (expected %q for tenant %s) — run 'msgvault add-o365 %s' to re-authorize",
+				email, tf.Scopes[0], correctScope, tf.TenantID, email,
+			)
+		}
+	}
+
 	cfg := m.oauthConfig(scopes)
 	ts := cfg.TokenSource(ctx, &tf.Token)
 
@@ -204,7 +222,7 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 			return "", fmt.Errorf("refresh Microsoft token: %w", err)
 		}
 		if tok.AccessToken != tf.Token.AccessToken {
-			if saveErr := m.saveToken(email, tok, tf.Scopes); saveErr != nil {
+			if saveErr := m.saveToken(email, tok, tf.Scopes, tf.TenantID); saveErr != nil {
 				m.logger.Warn("failed to save refreshed token", "email", email, "error", saveErr)
 			}
 			tf.Token = *tok
@@ -327,12 +345,17 @@ func (m *Manager) resolveTokenEmail(ctx context.Context, email string, token *oa
 		return claims.Email, claims, nil
 	}
 
-	// Fall back to "preferred_username". Since login_hint is advisory (a user
-	// could authenticate a different account), we require a case-insensitive
-	// match. If the UPN differs, it could indicate the wrong account was used.
+	// Fall back to "preferred_username". In Entra/O365 setups the UPN
+	// (sign-in identifier) can differ from the SMTP mailbox address, so a
+	// mismatch is not necessarily an error — trust the user-entered email as
+	// the mailbox address and log a warning. The IMAP connection will fail
+	// later if the address is actually wrong.
 	if claims.PreferredUsername != "" {
 		if !strings.EqualFold(claims.PreferredUsername, email) {
-			return "", claims, &TokenMismatchError{Expected: email, Actual: claims.PreferredUsername}
+			m.logger.Warn("UPN differs from expected email — using user-entered address as mailbox",
+				"expected", email,
+				"upn", claims.PreferredUsername,
+			)
 		}
 		return email, claims, nil
 	}
@@ -414,7 +437,8 @@ func peekTIDFromJWT(rawToken string) (string, error) {
 
 type tokenFile struct {
 	oauth2.Token
-	Scopes []string `json:"scopes,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+	TenantID string   `json:"tenant_id,omitempty"`
 }
 
 func (m *Manager) TokenPath(email string) string {
@@ -422,12 +446,12 @@ func (m *Manager) TokenPath(email string) string {
 	return filepath.Join(m.tokensDir, "microsoft_"+safe+".json")
 }
 
-func (m *Manager) saveToken(email string, token *oauth2.Token, scopes []string) error {
+func (m *Manager) saveToken(email string, token *oauth2.Token, scopes []string, tenantID string) error {
 	if err := fileutil.SecureMkdirAll(m.tokensDir, 0700); err != nil {
 		return err
 	}
 
-	tf := tokenFile{Token: *token, Scopes: scopes}
+	tf := tokenFile{Token: *token, Scopes: scopes, TenantID: tenantID}
 	data, err := json.MarshalIndent(tf, "", "  ")
 	if err != nil {
 		return err
