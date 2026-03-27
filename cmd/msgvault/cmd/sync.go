@@ -81,17 +81,26 @@ Examples:
 		if len(args) == 1 {
 			// Resolve all sources for the identifier and route
 			// each by type, same as sync-full.
-			allMatches, lookupErr := s.GetSourcesByIdentifier(args[0])
+			byID, lookupErr := s.GetSourcesByIdentifier(args[0])
 			if lookupErr != nil {
 				return fmt.Errorf("look up source: %w", lookupErr)
 			}
-			if len(allMatches) == 0 {
-				allMatches, lookupErr = s.GetSourcesByDisplayName(args[0])
-				if lookupErr != nil {
-					return fmt.Errorf("look up source by display name: %w", lookupErr)
+			byName, lookupErr := s.GetSourcesByDisplayName(args[0])
+			if lookupErr != nil {
+				return fmt.Errorf("look up source by display name: %w", lookupErr)
+			}
+			seen := make(map[int64]struct{})
+			var allMatches []*store.Source
+			for _, src := range byID {
+				if _, ok := seen[src.ID]; !ok {
+					seen[src.ID] = struct{}{}
+					allMatches = append(allMatches, src)
 				}
-				if len(allMatches) > 1 {
-					return fmt.Errorf("display name %q is ambiguous (%d matches) — use the full identifier instead", args[0], len(allMatches))
+			}
+			for _, src := range byName {
+				if _, ok := seen[src.ID]; !ok {
+					seen[src.ID] = struct{}{}
+					allMatches = append(allMatches, src)
 				}
 			}
 			for _, src := range allMatches {
@@ -140,18 +149,25 @@ Examples:
 					}
 					gmailTargets = append(gmailTargets, syncTarget{source: src, email: src.Identifier})
 				case "imap":
-					hasAuth := imaplib.HasCredentials(cfg.TokensDir(), src.Identifier)
-					if !hasAuth && src.SyncConfig.Valid {
+					hasAuth := false
+					if src.SyncConfig.Valid && src.SyncConfig.String != "" {
 						imapCfg, parseErr := imaplib.ConfigFromJSON(src.SyncConfig.String)
-						if parseErr == nil && imapCfg.EffectiveAuthMethod() == imaplib.AuthXOAuth2 {
-							msMgr := microsoft.NewManager(
-								cfg.Microsoft.ClientID,
-								cfg.Microsoft.EffectiveTenantID(),
-								cfg.TokensDir(),
-								logger,
-							)
-							hasAuth = msMgr.HasToken(imapCfg.Username)
+						if parseErr == nil {
+							switch imapCfg.EffectiveAuthMethod() {
+							case imaplib.AuthXOAuth2:
+								msMgr := microsoft.NewManager(
+									cfg.Microsoft.ClientID,
+									cfg.Microsoft.EffectiveTenantID(),
+									cfg.TokensDir(),
+									logger,
+								)
+								hasAuth = msMgr.HasToken(imapCfg.Username)
+							default:
+								hasAuth = imaplib.HasCredentials(cfg.TokensDir(), src.Identifier)
+							}
 						}
+					} else {
+						hasAuth = imaplib.HasCredentials(cfg.TokensDir(), src.Identifier)
 					}
 					if !hasAuth {
 						fmt.Printf("Skipping %s (no credentials - run 'add-imap' or 'add-o365' first)\n", src.Identifier)

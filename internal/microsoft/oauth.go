@@ -291,23 +291,35 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("state") != state {
-			errChan <- fmt.Errorf("state mismatch: possible CSRF attack")
+			select {
+			case errChan <- fmt.Errorf("state mismatch: possible CSRF attack"):
+			default:
+			}
 			_, _ = fmt.Fprintf(w, "Error: state mismatch")
 			return
 		}
 		if errMsg := r.URL.Query().Get("error"); errMsg != "" {
 			desc := r.URL.Query().Get("error_description")
-			errChan <- fmt.Errorf("microsoft OAuth error: %s: %s", errMsg, desc)
+			select {
+			case errChan <- fmt.Errorf("microsoft OAuth error: %s: %s", errMsg, desc):
+			default:
+			}
 			_, _ = fmt.Fprintf(w, "Error: %s", desc)
 			return
 		}
 		code := r.URL.Query().Get("code")
 		if code == "" {
-			errChan <- fmt.Errorf("no code in callback")
+			select {
+			case errChan <- fmt.Errorf("no code in callback"):
+			default:
+			}
 			_, _ = fmt.Fprintf(w, "Error: no authorization code received")
 			return
 		}
-		codeChan <- code
+		select {
+		case codeChan <- code:
+		default:
+		}
 		_, _ = fmt.Fprintf(w, "Authorization successful! You can close this window.")
 	})
 

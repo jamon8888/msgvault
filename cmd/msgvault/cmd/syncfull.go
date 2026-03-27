@@ -75,17 +75,26 @@ Examples:
 			// keep only syncable types (gmail, imap). Non-syncable
 			// sources like mbox/apple-mail imports share the same
 			// identifier namespace but cannot be synced.
-			allMatches, err := s.GetSourcesByIdentifier(args[0])
+			byID, err := s.GetSourcesByIdentifier(args[0])
 			if err != nil {
 				return fmt.Errorf("look up source: %w", err)
 			}
-			if len(allMatches) == 0 {
-				allMatches, err = s.GetSourcesByDisplayName(args[0])
-				if err != nil {
-					return fmt.Errorf("look up source by display name: %w", err)
+			byName, err := s.GetSourcesByDisplayName(args[0])
+			if err != nil {
+				return fmt.Errorf("look up source by display name: %w", err)
+			}
+			seen := make(map[int64]struct{})
+			var allMatches []*store.Source
+			for _, src := range byID {
+				if _, ok := seen[src.ID]; !ok {
+					seen[src.ID] = struct{}{}
+					allMatches = append(allMatches, src)
 				}
-				if len(allMatches) > 1 {
-					return fmt.Errorf("display name %q is ambiguous (%d matches) — use the full identifier instead", args[0], len(allMatches))
+			}
+			for _, src := range byName {
+				if _, ok := seen[src.ID]; !ok {
+					seen[src.ID] = struct{}{}
+					allMatches = append(allMatches, src)
 				}
 			}
 			for _, src := range allMatches {
@@ -127,18 +136,25 @@ Examples:
 						continue
 					}
 				case "imap":
-					hasAuth := imaplib.HasCredentials(cfg.TokensDir(), src.Identifier)
-					if !hasAuth && src.SyncConfig.Valid && src.SyncConfig.String != "" {
+					hasAuth := false
+					if src.SyncConfig.Valid && src.SyncConfig.String != "" {
 						imapCfg, parseErr := imaplib.ConfigFromJSON(src.SyncConfig.String)
-						if parseErr == nil && imapCfg.EffectiveAuthMethod() == imaplib.AuthXOAuth2 {
-							msMgr := microsoft.NewManager(
-								cfg.Microsoft.ClientID,
-								cfg.Microsoft.EffectiveTenantID(),
-								cfg.TokensDir(),
-								logger,
-							)
-							hasAuth = msMgr.HasToken(imapCfg.Username)
+						if parseErr == nil {
+							switch imapCfg.EffectiveAuthMethod() {
+							case imaplib.AuthXOAuth2:
+								msMgr := microsoft.NewManager(
+									cfg.Microsoft.ClientID,
+									cfg.Microsoft.EffectiveTenantID(),
+									cfg.TokensDir(),
+									logger,
+								)
+								hasAuth = msMgr.HasToken(imapCfg.Username)
+							default:
+								hasAuth = imaplib.HasCredentials(cfg.TokensDir(), src.Identifier)
+							}
 						}
+					} else {
+						hasAuth = imaplib.HasCredentials(cfg.TokensDir(), src.Identifier)
 					}
 					if !hasAuth {
 						fmt.Printf("Skipping %s (no credentials - run 'add-imap' or 'add-o365' first)\n", src.Identifier)
@@ -237,6 +253,9 @@ func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(str
 
 		switch imapCfg.EffectiveAuthMethod() {
 		case imaplib.AuthXOAuth2:
+			if cfg.Microsoft.ClientID == "" {
+				return nil, fmt.Errorf("microsoft OAuth not configured — add a [microsoft] section with client_id to config.toml")
+			}
 			msMgr := microsoft.NewManager(
 				cfg.Microsoft.ClientID,
 				cfg.Microsoft.EffectiveTenantID(),
