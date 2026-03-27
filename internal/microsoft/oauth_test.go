@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -160,7 +157,7 @@ func TestSanitizeEmail(t *testing.T) {
 }
 
 // makeIDToken builds a minimal unsigned JWT with the given claims.
-// Only used in tests — the signature is not verified at runtime.
+// Used in tests with verifyIDTokenFn to bypass OIDC signature validation.
 func makeIDToken(claims map[string]any) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
 	payload, _ := json.Marshal(claims)
@@ -168,24 +165,65 @@ func makeIDToken(claims map[string]any) string {
 	return header + "." + body + ".fake-sig"
 }
 
-func TestExtractIDTokenClaims(t *testing.T) {
+// testVerifyFn decodes an unsigned test JWT, bypassing OIDC validation.
+// Only for use in tests via Manager.verifyIDTokenFn.
+func testVerifyFn(_ context.Context, rawIDToken string) (*idTokenClaims, error) {
+	parts := splitJWT(rawIDToken)
+	if len(parts) != 3 {
+		return nil, nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Email             string `json:"email"`
+		PreferredUsername string `json:"preferred_username"`
+		TenantID          string `json:"tid"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, err
+	}
+	return &idTokenClaims{
+		Email:             raw.Email,
+		PreferredUsername: raw.PreferredUsername,
+		TenantID:          raw.TenantID,
+	}, nil
+}
+
+// splitJWT is a test helper to avoid importing strings just for Split.
+func splitJWT(s string) []string {
+	var parts []string
+	for {
+		idx := -1
+		for i := 0; i < len(s); i++ {
+			if s[i] == '.' {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			parts = append(parts, s)
+			break
+		}
+		parts = append(parts, s[:idx])
+		s = s[idx+1:]
+	}
+	return parts
+}
+
+func TestPeekTIDFromJWT(t *testing.T) {
 	idToken := makeIDToken(map[string]any{
 		"email":              "user@example.com",
 		"preferred_username": "user@tenant.onmicrosoft.com",
 		"tid":                "some-tenant-id",
 	})
-	claims, err := extractIDTokenClaims(idToken)
+	tid, err := peekTIDFromJWT(idToken)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.Email != "user@example.com" {
-		t.Errorf("Email = %q, want %q", claims.Email, "user@example.com")
-	}
-	if claims.PreferredUsername != "user@tenant.onmicrosoft.com" {
-		t.Errorf("PreferredUsername = %q, want %q", claims.PreferredUsername, "user@tenant.onmicrosoft.com")
-	}
-	if claims.TenantID != "some-tenant-id" {
-		t.Errorf("TenantID = %q, want %q", claims.TenantID, "some-tenant-id")
+	if tid != "some-tenant-id" {
+		t.Errorf("tid = %q, want %q", tid, "some-tenant-id")
 	}
 }
 
@@ -199,12 +237,17 @@ func TestImapScopeForTenant(t *testing.T) {
 }
 
 func TestResolveTokenEmail_Match(t *testing.T) {
-	m := &Manager{clientID: "test-client", tenantID: "common", tokensDir: t.TempDir()}
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		verifyIDTokenFn: testVerifyFn,
+	}
 	idToken := makeIDToken(map[string]any{"email": "user@example.com", "tid": "org-tid"})
 	token := (&oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}).
 		WithExtra(map[string]any{"id_token": idToken})
 
-	actual, claims, err := m.resolveTokenEmail(t.Context(), "user@example.com", token)
+	actual, claims, err := m.resolveTokenEmail(t.Context(), "user@example.com", token, "test-nonce")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,12 +260,17 @@ func TestResolveTokenEmail_Match(t *testing.T) {
 }
 
 func TestResolveTokenEmail_Mismatch(t *testing.T) {
-	m := &Manager{clientID: "test-client", tenantID: "common", tokensDir: t.TempDir()}
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		verifyIDTokenFn: testVerifyFn,
+	}
 	idToken := makeIDToken(map[string]any{"email": "other@example.com"})
 	token := (&oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}).
 		WithExtra(map[string]any{"id_token": idToken})
 
-	_, _, err := m.resolveTokenEmail(t.Context(), "user@example.com", token)
+	_, _, err := m.resolveTokenEmail(t.Context(), "user@example.com", token, "test-nonce")
 	if err == nil {
 		t.Fatal("expected error for mismatch")
 	}
@@ -233,12 +281,17 @@ func TestResolveTokenEmail_Mismatch(t *testing.T) {
 
 func TestResolveTokenEmail_FallbackToUPN(t *testing.T) {
 	// Some accounts omit "email" and only have "preferred_username".
-	m := &Manager{clientID: "test-client", tenantID: "common", tokensDir: t.TempDir()}
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		verifyIDTokenFn: testVerifyFn,
+	}
 	idToken := makeIDToken(map[string]any{"preferred_username": "user@example.com"})
 	token := (&oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}).
 		WithExtra(map[string]any{"id_token": idToken})
 
-	actual, _, err := m.resolveTokenEmail(t.Context(), "user@example.com", token)
+	actual, _, err := m.resolveTokenEmail(t.Context(), "user@example.com", token, "test-nonce")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,9 +301,15 @@ func TestResolveTokenEmail_FallbackToUPN(t *testing.T) {
 }
 
 func TestResolveTokenEmail_UPNDiffersFromExpected(t *testing.T) {
-	// Org accounts where UPN differs from SMTP address should succeed
-	// with a warning, not error.
-	m := &Manager{clientID: "test-client", tenantID: "common", tokensDir: t.TempDir(), logger: slog.Default()}
+	// Org accounts where UPN differs from SMTP address must now fail
+	// to prevent account-binding bypass (login_hint is advisory).
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		logger:          slog.Default(),
+		verifyIDTokenFn: testVerifyFn,
+	}
 	idToken := makeIDToken(map[string]any{
 		"preferred_username": "john.doe@company.onmicrosoft.com",
 		"tid":                "org-tenant-id",
@@ -258,23 +317,24 @@ func TestResolveTokenEmail_UPNDiffersFromExpected(t *testing.T) {
 	token := (&oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}).
 		WithExtra(map[string]any{"id_token": idToken})
 
-	actual, claims, err := m.resolveTokenEmail(t.Context(), "john@company.com", token)
-	if err != nil {
-		t.Fatalf("expected no error for UPN mismatch, got: %v", err)
+	_, _, err := m.resolveTokenEmail(t.Context(), "john@company.com", token, "test-nonce")
+	if err == nil {
+		t.Fatal("expected TokenMismatchError for UPN mismatch")
 	}
-	// Should return the user-provided email, not the UPN.
-	if actual != "john@company.com" {
-		t.Errorf("actual = %q, want %q", actual, "john@company.com")
-	}
-	if claims.TenantID != "org-tenant-id" {
-		t.Errorf("TenantID = %q, want %q", claims.TenantID, "org-tenant-id")
+	if _, ok := err.(*TokenMismatchError); !ok {
+		t.Errorf("expected *TokenMismatchError, got %T: %v", err, err)
 	}
 }
 
 func TestResolveTokenEmail_EmailClaimMismatchStillErrors(t *testing.T) {
 	// When the authoritative "email" claim IS present but doesn't match,
 	// it should still error (user authenticated the wrong account).
-	m := &Manager{clientID: "test-client", tenantID: "common", tokensDir: t.TempDir()}
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		verifyIDTokenFn: testVerifyFn,
+	}
 	idToken := makeIDToken(map[string]any{
 		"email":              "wrong@other.com",
 		"preferred_username": "john@company.com",
@@ -282,7 +342,7 @@ func TestResolveTokenEmail_EmailClaimMismatchStillErrors(t *testing.T) {
 	token := (&oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}).
 		WithExtra(map[string]any{"id_token": idToken})
 
-	_, _, err := m.resolveTokenEmail(t.Context(), "john@company.com", token)
+	_, _, err := m.resolveTokenEmail(t.Context(), "john@company.com", token, "test-nonce")
 	if err == nil {
 		t.Fatal("expected TokenMismatchError when email claim is wrong")
 	}
@@ -293,84 +353,59 @@ func TestResolveTokenEmail_EmailClaimMismatchStillErrors(t *testing.T) {
 
 func TestAuthorize_ScopeCorrection(t *testing.T) {
 	// Simulate: user@custom-domain.com guessed as org, but tid reveals consumer.
-	// The refresh should re-acquire a token with the personal IMAP scope.
-
-	// Mock token endpoint that returns a refreshed token.
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{
-			"access_token": "refreshed-access-token",
-			"token_type": "Bearer",
-			"refresh_token": "refreshed-refresh-token",
-			"expires_in": 3600
-		}`)
-	}))
-	defer tokenServer.Close()
-
+	// The browser flow should be called twice: once with org scope, once with personal.
 	dir := t.TempDir()
 	m := &Manager{
-		clientID:  "test-client",
-		tenantID:  "common",
-		tokensDir: dir,
-		logger:    slog.Default(),
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       dir,
+		logger:          slog.Default(),
+		verifyIDTokenFn: testVerifyFn,
 	}
 
-	// Override the oauth config to point at our test token server.
-	// We do this by injecting a browserFlowFn that returns a token
-	// with the consumer tid, and override the oauth config's token URL.
 	consumerTID := MicrosoftConsumerTenantID
-	idToken := makeIDToken(map[string]any{
-		"email": "user@custom-domain.com",
-		"tid":   consumerTID,
-	})
+	callCount := 0
 
-	m.browserFlowFn = func(ctx context.Context, email string, scopes []string) (*oauth2.Token, error) {
-		// Verify initial guess was org scope (custom domain).
-		if scopes[0] != ScopeIMAPOrg {
-			t.Errorf("initial scope = %q, want org scope", scopes[0])
+	m.browserFlowFn = func(ctx context.Context, email string, scopes []string) (*oauth2.Token, string, error) {
+		callCount++
+		idToken := makeIDToken(map[string]any{
+			"email": "user@custom-domain.com",
+			"tid":   consumerTID,
+		})
+		if callCount == 1 {
+			// First call: should have org scope (domain-based guess).
+			if scopes[0] != ScopeIMAPOrg {
+				t.Errorf("first call scope = %q, want org scope", scopes[0])
+			}
+		} else if callCount == 2 {
+			// Second call: should have personal scope (corrected via tid).
+			if scopes[0] != ScopeIMAPPersonal {
+				t.Errorf("second call scope = %q, want personal scope", scopes[0])
+			}
 		}
 		tok := (&oauth2.Token{
-			AccessToken:  "initial-access-token",
-			RefreshToken: "initial-refresh-token",
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
 			TokenType:    "Bearer",
 		}).WithExtra(map[string]any{"id_token": idToken})
-		return tok, nil
+		return tok, "test-nonce", nil
 	}
 
-	// Override oauthConfig to point token URL at test server.
-	origTenantID := m.tenantID
-	m.tenantID = "common"
-	// We need to intercept the token source. Override the tenant to redirect
-	// the token endpoint URL to our test server.
-	// The simplest approach: temporarily replace the tenant-based URL construction.
-	// Instead, we'll patch the Manager to use a custom endpoint.
-	// Since oauthConfig uses tenantID to build the URL, we can't easily override.
-	// Instead, test that the saved scopes are correct — the refresh call will fail
-	// but we can test the detection logic separately.
-
-	// For a full integration test of the refresh, we need a different approach.
-	// Let's verify the scope detection and the saved state.
-	m.tenantID = origTenantID
-
-	// Since we can't easily mock the token refresh endpoint in the current
-	// architecture, test the components individually:
-
-	// 1. Verify scope detection from tid works.
-	correctScope := imapScopeForTenant(consumerTID)
-	if correctScope != ScopeIMAPPersonal {
-		t.Errorf("imapScopeForTenant(consumer) = %q, want %q", correctScope, ScopeIMAPPersonal)
+	if err := m.Authorize(t.Context(), "user@custom-domain.com"); err != nil {
+		t.Fatal(err)
 	}
 
-	// 2. Verify the initial guess for custom domain is org (wrong for consumer).
-	guessedScopes := scopesForEmail("user@custom-domain.com")
-	if guessedScopes[0] != ScopeIMAPOrg {
-		t.Errorf("scopesForEmail(custom) = %q, want org scope", guessedScopes[0])
+	if callCount != 2 {
+		t.Errorf("browserFlowFn called %d times, want 2", callCount)
 	}
 
-	// 3. Verify that a known personal domain gets the right scope directly.
-	personalScopes := scopesForEmail("user@outlook.com")
-	if personalScopes[0] != ScopeIMAPPersonal {
-		t.Errorf("scopesForEmail(outlook.com) = %q, want personal scope", personalScopes[0])
+	// Verify saved scopes are personal (corrected).
+	tf, err := m.loadTokenFile("user@custom-domain.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tf.Scopes) == 0 || tf.Scopes[0] != ScopeIMAPPersonal {
+		t.Errorf("saved scopes[0] = %q, want %q", tf.Scopes[0], ScopeIMAPPersonal)
 	}
 }
 
@@ -379,33 +414,40 @@ func TestAuthorize_NoScopeCorrection(t *testing.T) {
 	// user@outlook.com → guessed personal, tid confirms consumer → no correction.
 	dir := t.TempDir()
 	m := &Manager{
-		clientID:  "test-client",
-		tenantID:  "common",
-		tokensDir: dir,
-		logger:    slog.Default(),
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       dir,
+		logger:          slog.Default(),
+		verifyIDTokenFn: testVerifyFn,
 	}
 
 	consumerTID := MicrosoftConsumerTenantID
-	idToken := makeIDToken(map[string]any{
-		"email": "user@outlook.com",
-		"tid":   consumerTID,
-	})
+	callCount := 0
 
-	m.browserFlowFn = func(ctx context.Context, email string, scopes []string) (*oauth2.Token, error) {
+	m.browserFlowFn = func(ctx context.Context, email string, scopes []string) (*oauth2.Token, string, error) {
+		callCount++
 		// Should already have personal scope.
 		if scopes[0] != ScopeIMAPPersonal {
 			t.Errorf("initial scope = %q, want personal scope", scopes[0])
 		}
+		idToken := makeIDToken(map[string]any{
+			"email": "user@outlook.com",
+			"tid":   consumerTID,
+		})
 		tok := (&oauth2.Token{
 			AccessToken:  "access-token",
 			RefreshToken: "refresh-token",
 			TokenType:    "Bearer",
 		}).WithExtra(map[string]any{"id_token": idToken})
-		return tok, nil
+		return tok, "test-nonce", nil
 	}
 
 	if err := m.Authorize(t.Context(), "user@outlook.com"); err != nil {
 		t.Fatal(err)
+	}
+
+	if callCount != 1 {
+		t.Errorf("browserFlowFn called %d times, want 1 (no correction needed)", callCount)
 	}
 
 	// Verify saved scopes are personal (no correction needed).

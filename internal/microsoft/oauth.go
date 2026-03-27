@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/wesm/msgvault/internal/fileutil"
 	"golang.org/x/oauth2"
 )
@@ -101,7 +102,10 @@ type Manager struct {
 	tokensDir string
 	logger    *slog.Logger
 
-	browserFlowFn func(ctx context.Context, email string, scopes []string) (*oauth2.Token, error)
+	// browserFlowFn overrides browserFlow for testing. Returns (token, nonce, error).
+	browserFlowFn func(ctx context.Context, email string, scopes []string) (*oauth2.Token, string, error)
+	// verifyIDTokenFn overrides verifyIDToken for testing (bypasses OIDC validation).
+	verifyIDTokenFn func(ctx context.Context, rawIDToken string) (*idTokenClaims, error)
 }
 
 func NewManager(clientID, tenantID, tokensDir string, logger *slog.Logger) *Manager {
@@ -133,41 +137,50 @@ func (m *Manager) oauthConfig(scopes []string) *oauth2.Config {
 
 func (m *Manager) Authorize(ctx context.Context, email string) error {
 	scopes := scopesForEmail(email)
-	flow := m.browserFlow
-	if m.browserFlowFn != nil {
-		flow = m.browserFlowFn
-	}
-	token, err := flow(ctx, email, scopes)
+	flow := m.doBrowserFlow
+	token, nonce, err := flow(ctx, email, scopes)
 	if err != nil {
 		return err
 	}
-	_, claims, err := m.resolveTokenEmail(ctx, email, token)
+	_, claims, err := m.resolveTokenEmail(ctx, email, token, nonce)
 	if err != nil {
 		return err
 	}
 
 	// Correct IMAP scope if the domain-based guess was wrong.
 	// The tid claim from the ID token is authoritative for account type.
+	// We must restart the browser flow (not just refresh) because consent
+	// for a different IMAP resource requires interactive authorization.
 	if claims.TenantID != "" {
 		correctIMAPScope := imapScopeForTenant(claims.TenantID)
 		if scopes[0] != correctIMAPScope {
-			m.logger.Info("correcting IMAP scope based on tenant ID",
+			m.logger.Info("correcting IMAP scope based on tenant ID, re-authorizing",
 				"email", email,
 				"tid", claims.TenantID,
 				"from", scopes[0],
 				"to", correctIMAPScope,
 			)
 			scopes = []string{correctIMAPScope, "offline_access", "openid", "email"}
-			correctedCfg := m.oauthConfig(scopes)
-			refreshOnly := &oauth2.Token{RefreshToken: token.RefreshToken}
-			token, err = correctedCfg.TokenSource(ctx, refreshOnly).Token()
+			token, nonce, err = flow(ctx, email, scopes)
 			if err != nil {
-				return fmt.Errorf("re-acquire token with correct IMAP scope: %w", err)
+				return fmt.Errorf("re-authorize with correct IMAP scope: %w", err)
+			}
+			_, claims, err = m.resolveTokenEmail(ctx, email, token, nonce)
+			if err != nil {
+				return err
 			}
 		}
 	}
 
 	return m.saveToken(email, token, scopes)
+}
+
+// doBrowserFlow dispatches to browserFlowFn (test hook) or the real browserFlow.
+func (m *Manager) doBrowserFlow(ctx context.Context, email string, scopes []string) (*oauth2.Token, string, error) {
+	if m.browserFlowFn != nil {
+		return m.browserFlowFn(ctx, email, scopes)
+	}
+	return m.browserFlow(ctx, email, scopes)
 }
 
 // TokenSource returns a function that provides fresh access tokens.
@@ -200,13 +213,13 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 	}, nil
 }
 
-func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string) (*oauth2.Token, error) {
+func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string) (*oauth2.Token, string, error) {
 	cfg := m.oauthConfig(scopes)
 
 	// PKCE (required by Azure AD for public clients)
 	verifierBytes := make([]byte, 32)
 	if _, err := rand.Read(verifierBytes); err != nil {
-		return nil, fmt.Errorf("generate PKCE verifier: %w", err)
+		return nil, "", fmt.Errorf("generate PKCE verifier: %w", err)
 	}
 	verifier := base64.RawURLEncoding.EncodeToString(verifierBytes)
 	challengeHash := sha256.Sum256([]byte(verifier))
@@ -215,9 +228,16 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 	// CSRF state
 	stateBytes := make([]byte, 16)
 	if _, err := rand.Read(stateBytes); err != nil {
-		return nil, fmt.Errorf("generate state: %w", err)
+		return nil, "", fmt.Errorf("generate state: %w", err)
 	}
 	state := base64.URLEncoding.EncodeToString(stateBytes)
+
+	// Nonce for ID token replay protection
+	nonceBytes := make([]byte, 32)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return nil, "", fmt.Errorf("generate nonce: %w", err)
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 
 	codeChan := make(chan string, 1)
 	errChan := make(chan error, 1)
@@ -257,6 +277,7 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 		oauth2.SetAuthURLParam("code_challenge", challenge),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
 		oauth2.SetAuthURLParam("login_hint", email),
+		oauth2.SetAuthURLParam("nonce", nonce),
 	)
 
 	fmt.Printf("Opening browser for Microsoft authorization...\n")
@@ -267,33 +288,35 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 
 	select {
 	case code := <-codeChan:
-		return cfg.Exchange(ctx, code,
+		token, err := cfg.Exchange(ctx, code,
 			oauth2.SetAuthURLParam("code_verifier", verifier),
 		)
+		return token, nonce, err
 	case err := <-errChan:
-		return nil, err
+		return nil, "", err
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, "", ctx.Err()
 	}
 }
 
-// resolveTokenEmail extracts the authenticated email from the ID token
-// returned during the authorization code exchange. This avoids a separate
-// MS Graph API call, which would fail because the access token is scoped
-// to outlook.office365.com, not graph.microsoft.com.
-//
-// When the "email" claim is absent (common for org accounts), the function
-// falls back to "preferred_username". If that also differs from the expected
-// email (UPN ≠ SMTP is normal for org accounts), a warning is logged but
-// the flow proceeds — the user authenticated via browser with login_hint.
-func (m *Manager) resolveTokenEmail(ctx context.Context, email string, token *oauth2.Token) (string, *idTokenClaims, error) {
-	idToken, _ := token.Extra("id_token").(string)
-	if idToken == "" {
+// resolveTokenEmail verifies the ID token and validates the authenticated
+// email matches the expected address. Uses OIDC signature/issuer/audience
+// validation in production, or verifyIDTokenFn in tests.
+func (m *Manager) resolveTokenEmail(ctx context.Context, email string, token *oauth2.Token, nonce string) (string, *idTokenClaims, error) {
+	rawIDToken, _ := token.Extra("id_token").(string)
+	if rawIDToken == "" {
 		return "", nil, fmt.Errorf("no id_token in authorization response")
 	}
-	claims, err := extractIDTokenClaims(idToken)
+
+	var claims *idTokenClaims
+	var err error
+	if m.verifyIDTokenFn != nil {
+		claims, err = m.verifyIDTokenFn(ctx, rawIDToken)
+	} else {
+		claims, err = m.verifyIDToken(ctx, rawIDToken, nonce)
+	}
 	if err != nil {
-		return "", nil, fmt.Errorf("extract claims from ID token: %w", err)
+		return "", nil, fmt.Errorf("verify ID token: %w", err)
 	}
 
 	// Prefer the "email" claim — it is the authoritative SMTP address.
@@ -304,16 +327,12 @@ func (m *Manager) resolveTokenEmail(ctx context.Context, email string, token *oa
 		return claims.Email, claims, nil
 	}
 
-	// Fall back to "preferred_username". For org accounts this is often
-	// the UPN (e.g. user@tenant.onmicrosoft.com) which may differ from
-	// the primary SMTP address. We warn but proceed because the user
-	// authenticated interactively with login_hint set to the expected email.
+	// Fall back to "preferred_username". Since login_hint is advisory (a user
+	// could authenticate a different account), we require a case-insensitive
+	// match. If the UPN differs, it could indicate the wrong account was used.
 	if claims.PreferredUsername != "" {
 		if !strings.EqualFold(claims.PreferredUsername, email) {
-			m.logger.Warn("ID token email claim absent; preferred_username differs from expected email (UPN ≠ SMTP is normal for org accounts)",
-				"expected", email,
-				"preferred_username", claims.PreferredUsername,
-			)
+			return "", claims, &TokenMismatchError{Expected: email, Actual: claims.PreferredUsername}
 		}
 		return email, claims, nil
 	}
@@ -321,31 +340,74 @@ func (m *Manager) resolveTokenEmail(ctx context.Context, email string, token *oa
 	return "", claims, fmt.Errorf("no email or preferred_username claim in ID token")
 }
 
-// extractIDTokenClaims decodes the JWT payload and returns the relevant claims.
-// The signature is not verified — we trust the token because it was
-// received directly from Microsoft over HTTPS.
-func extractIDTokenClaims(idToken string) (*idTokenClaims, error) {
-	parts := strings.Split(idToken, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid ID token format (expected 3 parts, got %d)", len(parts))
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+// verifyIDToken validates the ID token using Microsoft's OIDC discovery and
+// JWKS endpoints. Checks signature, issuer, audience, expiry, and nonce.
+func (m *Manager) verifyIDToken(ctx context.Context, rawIDToken, nonce string) (*idTokenClaims, error) {
+	// Peek at the unverified tid to construct the tenant-specific OIDC provider.
+	// This is safe because the subsequent OIDC verification will fail if the
+	// token was actually issued by a different tenant than the derived issuer.
+	tid, err := peekTIDFromJWT(rawIDToken)
 	if err != nil {
-		return nil, fmt.Errorf("decode ID token payload: %w", err)
+		return nil, fmt.Errorf("peek tenant ID from JWT: %w", err)
 	}
+
+	issuerURL := fmt.Sprintf("https://login.microsoftonline.com/%s/v2.0", tid)
+	provider, err := oidc.NewProvider(ctx, issuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("OIDC discovery for tenant %s: %w", tid, err)
+	}
+
+	verifier := provider.Verifier(&oidc.Config{
+		ClientID: m.clientID,
+	})
+
+	idToken, err := verifier.Verify(ctx, rawIDToken)
+	if err != nil {
+		return nil, fmt.Errorf("verify ID token signature/claims: %w", err)
+	}
+
+	// Verify nonce to prevent replay attacks.
+	if idToken.Nonce != nonce {
+		return nil, fmt.Errorf("ID token nonce mismatch (possible replay attack)")
+	}
+
 	var raw struct {
 		Email             string `json:"email"`
 		PreferredUsername string `json:"preferred_username"`
 		TenantID          string `json:"tid"`
 	}
-	if err := json.Unmarshal(payload, &raw); err != nil {
-		return nil, fmt.Errorf("parse ID token claims: %w", err)
+	if err := idToken.Claims(&raw); err != nil {
+		return nil, fmt.Errorf("extract ID token claims: %w", err)
 	}
 	return &idTokenClaims{
 		Email:             raw.Email,
 		PreferredUsername: raw.PreferredUsername,
 		TenantID:          raw.TenantID,
 	}, nil
+}
+
+// peekTIDFromJWT does a minimal unverified decode of a JWT to extract the
+// "tid" (tenant ID) claim. Used only to determine which OIDC provider URL
+// to construct for full validation.
+func peekTIDFromJWT(rawToken string) (string, error) {
+	parts := strings.Split(rawToken, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("invalid JWT format (expected 3 parts, got %d)", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("decode JWT payload: %w", err)
+	}
+	var claims struct {
+		TenantID string `json:"tid"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", fmt.Errorf("parse JWT claims: %w", err)
+	}
+	if claims.TenantID == "" {
+		return "", fmt.Errorf("no tid claim in JWT")
+	}
+	return claims.TenantID, nil
 }
 
 // --- Token storage ---
