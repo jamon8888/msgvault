@@ -29,6 +29,10 @@ const (
 	// (hotmail.com, outlook.com, live.com, etc.).
 	ScopeIMAPPersonal = "https://outlook.office.com/IMAP.AccessAsUser.All"
 
+	// MicrosoftConsumerTenantID is the fixed tenant ID for all personal
+	// Microsoft accounts (outlook.com, hotmail.com, live.com, etc.).
+	MicrosoftConsumerTenantID = "9188040d-6c67-4c5b-b112-36a304b66dad"
+
 	redirectPort = "8089"
 	callbackPath = "/callback/microsoft"
 )
@@ -56,11 +60,30 @@ func isPersonalMicrosoftAccount(email string) bool {
 	switch domain {
 	case "hotmail.com", "outlook.com", "live.com", "msn.com",
 		"hotmail.co.uk", "hotmail.fr", "hotmail.de", "hotmail.es", "hotmail.it",
+		"hotmail.co.jp", "hotmail.com.au", "hotmail.com.br",
 		"live.co.uk", "live.fr", "live.de", "live.it",
-		"outlook.co.uk", "outlook.fr", "outlook.de", "outlook.es", "outlook.it":
+		"live.com.au", "live.jp",
+		"outlook.co.uk", "outlook.fr", "outlook.de", "outlook.es", "outlook.it",
+		"outlook.jp", "outlook.kr", "outlook.com.br", "outlook.com.au":
 		return true
 	}
 	return false
+}
+
+// idTokenClaims holds the relevant claims extracted from a Microsoft ID token.
+type idTokenClaims struct {
+	Email             string // "email" claim (SMTP address)
+	PreferredUsername string // "preferred_username" claim (may be UPN for org accounts)
+	TenantID          string // "tid" claim
+}
+
+// imapScopeForTenant returns the correct IMAP scope based on the tenant ID.
+// The consumer tenant has a fixed, well-known ID; all others are org tenants.
+func imapScopeForTenant(tid string) string {
+	if strings.EqualFold(tid, MicrosoftConsumerTenantID) {
+		return ScopeIMAPPersonal
+	}
+	return ScopeIMAPOrg
 }
 
 type TokenMismatchError struct {
@@ -118,9 +141,32 @@ func (m *Manager) Authorize(ctx context.Context, email string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := m.resolveTokenEmail(ctx, email, token); err != nil {
+	_, claims, err := m.resolveTokenEmail(ctx, email, token)
+	if err != nil {
 		return err
 	}
+
+	// Correct IMAP scope if the domain-based guess was wrong.
+	// The tid claim from the ID token is authoritative for account type.
+	if claims.TenantID != "" {
+		correctIMAPScope := imapScopeForTenant(claims.TenantID)
+		if scopes[0] != correctIMAPScope {
+			m.logger.Info("correcting IMAP scope based on tenant ID",
+				"email", email,
+				"tid", claims.TenantID,
+				"from", scopes[0],
+				"to", correctIMAPScope,
+			)
+			scopes = []string{correctIMAPScope, "offline_access", "openid", "email"}
+			correctedCfg := m.oauthConfig(scopes)
+			refreshOnly := &oauth2.Token{RefreshToken: token.RefreshToken}
+			token, err = correctedCfg.TokenSource(ctx, refreshOnly).Token()
+			if err != nil {
+				return fmt.Errorf("re-acquire token with correct IMAP scope: %w", err)
+			}
+		}
+	}
+
 	return m.saveToken(email, token, scopes)
 }
 
@@ -235,48 +281,71 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 // returned during the authorization code exchange. This avoids a separate
 // MS Graph API call, which would fail because the access token is scoped
 // to outlook.office365.com, not graph.microsoft.com.
-func (m *Manager) resolveTokenEmail(ctx context.Context, email string, token *oauth2.Token) (string, error) {
+//
+// When the "email" claim is absent (common for org accounts), the function
+// falls back to "preferred_username". If that also differs from the expected
+// email (UPN ≠ SMTP is normal for org accounts), a warning is logged but
+// the flow proceeds — the user authenticated via browser with login_hint.
+func (m *Manager) resolveTokenEmail(ctx context.Context, email string, token *oauth2.Token) (string, *idTokenClaims, error) {
 	idToken, _ := token.Extra("id_token").(string)
 	if idToken == "" {
-		return "", fmt.Errorf("no id_token in authorization response")
+		return "", nil, fmt.Errorf("no id_token in authorization response")
 	}
-	actual, err := extractEmailFromIDToken(idToken)
+	claims, err := extractIDTokenClaims(idToken)
 	if err != nil {
-		return "", fmt.Errorf("extract email from ID token: %w", err)
+		return "", nil, fmt.Errorf("extract claims from ID token: %w", err)
 	}
-	if !strings.EqualFold(actual, email) {
-		return "", &TokenMismatchError{Expected: email, Actual: actual}
+
+	// Prefer the "email" claim — it is the authoritative SMTP address.
+	if claims.Email != "" {
+		if !strings.EqualFold(claims.Email, email) {
+			return "", claims, &TokenMismatchError{Expected: email, Actual: claims.Email}
+		}
+		return claims.Email, claims, nil
 	}
-	return actual, nil
+
+	// Fall back to "preferred_username". For org accounts this is often
+	// the UPN (e.g. user@tenant.onmicrosoft.com) which may differ from
+	// the primary SMTP address. We warn but proceed because the user
+	// authenticated interactively with login_hint set to the expected email.
+	if claims.PreferredUsername != "" {
+		if !strings.EqualFold(claims.PreferredUsername, email) {
+			m.logger.Warn("ID token email claim absent; preferred_username differs from expected email (UPN ≠ SMTP is normal for org accounts)",
+				"expected", email,
+				"preferred_username", claims.PreferredUsername,
+			)
+		}
+		return email, claims, nil
+	}
+
+	return "", claims, fmt.Errorf("no email or preferred_username claim in ID token")
 }
 
-// extractEmailFromIDToken decodes the JWT payload and returns the email
-// (from the "email" claim, falling back to "preferred_username").
+// extractIDTokenClaims decodes the JWT payload and returns the relevant claims.
 // The signature is not verified — we trust the token because it was
 // received directly from Microsoft over HTTPS.
-func extractEmailFromIDToken(idToken string) (string, error) {
+func extractIDTokenClaims(idToken string) (*idTokenClaims, error) {
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {
-		return "", fmt.Errorf("invalid ID token format (expected 3 parts, got %d)", len(parts))
+		return nil, fmt.Errorf("invalid ID token format (expected 3 parts, got %d)", len(parts))
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", fmt.Errorf("decode ID token payload: %w", err)
+		return nil, fmt.Errorf("decode ID token payload: %w", err)
 	}
-	var claims struct {
+	var raw struct {
 		Email             string `json:"email"`
 		PreferredUsername string `json:"preferred_username"`
+		TenantID          string `json:"tid"`
 	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", fmt.Errorf("parse ID token claims: %w", err)
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, fmt.Errorf("parse ID token claims: %w", err)
 	}
-	if claims.Email != "" {
-		return claims.Email, nil
-	}
-	if claims.PreferredUsername != "" {
-		return claims.PreferredUsername, nil
-	}
-	return "", fmt.Errorf("no email or preferred_username claim in ID token")
+	return &idTokenClaims{
+		Email:             raw.Email,
+		PreferredUsername: raw.PreferredUsername,
+		TenantID:          raw.TenantID,
+	}, nil
 }
 
 // --- Token storage ---
