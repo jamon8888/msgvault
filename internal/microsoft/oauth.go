@@ -232,8 +232,10 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 	ts := cfg.TokenSource(ctx, &tf.Token)
 
 	var (
-		mu              sync.Mutex
-		lastAccessToken = tf.AccessToken
+		mu               sync.Mutex
+		lastAccessToken  = tf.AccessToken
+		lastRefreshToken = tf.RefreshToken
+		lastExpiry       = tf.Expiry
 	)
 
 	return func(callCtx context.Context) (string, error) {
@@ -243,9 +245,13 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 		}
 
 		mu.Lock()
-		changed := tok.AccessToken != lastAccessToken
+		changed := tok.AccessToken != lastAccessToken ||
+			tok.RefreshToken != lastRefreshToken ||
+			!tok.Expiry.Equal(lastExpiry)
 		if changed {
 			lastAccessToken = tok.AccessToken
+			lastRefreshToken = tok.RefreshToken
+			lastExpiry = tok.Expiry
 		}
 		mu.Unlock()
 
