@@ -66,6 +66,8 @@ func (s *Store) GetSourcesByIdentifierOrDisplayName(query string) ([]*Source, er
 // GetSourcesByDisplayName returns all sources with the given display name.
 // Use this as a fallback when looking up IMAP sources by their human-readable
 // email address rather than the full imaps:// identifier.
+// Note: display_name is not constrained to be unique — callers receive all
+// matching rows if more than one source shares the same name.
 func (s *Store) GetSourcesByDisplayName(displayName string) ([]*Source, error) {
 	rows, err := s.db.Query(`
 		SELECT id, source_type, identifier, display_name,

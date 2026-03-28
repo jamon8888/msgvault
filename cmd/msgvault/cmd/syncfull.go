@@ -118,35 +118,14 @@ Examples:
 						continue
 					}
 				case "imap":
-					if src.SyncConfig.Valid && src.SyncConfig.String != "" {
-						imapCfg, parseErr := imaplib.ConfigFromJSON(src.SyncConfig.String)
-						if parseErr != nil {
-							syncErrors = append(syncErrors, fmt.Sprintf("%s: malformed sync_config: %v", src.Identifier, parseErr))
-							continue
-						}
-						switch imapCfg.EffectiveAuthMethod() {
-						case imaplib.AuthXOAuth2:
-							msMgr := microsoft.NewManager(
-								cfg.Microsoft.ClientID,
-								cfg.Microsoft.EffectiveTenantID(),
-								cfg.TokensDir(),
-								logger,
-							)
-							if !msMgr.HasToken(imapCfg.Username) {
-								fmt.Printf("Skipping %s (no Microsoft token - run 'add-o365' first)\n", src.Identifier)
-								continue
-							}
-						default:
-							if !imaplib.HasCredentials(cfg.TokensDir(), src.Identifier) {
-								fmt.Printf("Skipping %s (no credentials - run 'add-imap' first)\n", src.Identifier)
-								continue
-							}
-						}
-					} else {
-						if !imaplib.HasCredentials(cfg.TokensDir(), src.Identifier) {
-							fmt.Printf("Skipping %s (no credentials - run 'add-imap' or 'add-o365' first)\n", src.Identifier)
-							continue
-						}
+					skipMsg, parseErr := imapSkipReason(src)
+					if parseErr != nil {
+						syncErrors = append(syncErrors, fmt.Sprintf("%s: malformed sync_config: %v", src.Identifier, parseErr))
+						continue
+					}
+					if skipMsg != "" {
+						fmt.Println(skipMsg)
+						continue
 					}
 				default:
 					fmt.Printf("Skipping %s (unsupported source type %q)\n", src.Identifier, src.SourceType)
@@ -474,6 +453,41 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm %ds", m, s)
 	}
 	return fmt.Sprintf("%ds", s)
+}
+
+// imapSkipReason checks whether an IMAP source has the credentials needed to
+// sync. Return values:
+//   - ("", nil)     — credentials present, source is ready
+//   - ("msg", nil)  — credentials absent; print the message and skip
+//   - ("", err)     — sync_config is malformed; add to the error list
+func imapSkipReason(src *store.Source) (string, error) {
+	if !src.SyncConfig.Valid || src.SyncConfig.String == "" {
+		if !imaplib.HasCredentials(cfg.TokensDir(), src.Identifier) {
+			return fmt.Sprintf("Skipping %s (no credentials — run 'add-imap' or 'add-o365' first)", src.Identifier), nil
+		}
+		return "", nil
+	}
+	imapCfg, err := imaplib.ConfigFromJSON(src.SyncConfig.String)
+	if err != nil {
+		return "", err
+	}
+	switch imapCfg.EffectiveAuthMethod() {
+	case imaplib.AuthXOAuth2:
+		msMgr := microsoft.NewManager(
+			cfg.Microsoft.ClientID,
+			cfg.Microsoft.EffectiveTenantID(),
+			cfg.TokensDir(),
+			logger,
+		)
+		if !msMgr.HasToken(imapCfg.Username) {
+			return fmt.Sprintf("Skipping %s (no Microsoft token — run 'add-o365' first)", src.Identifier), nil
+		}
+	default:
+		if !imaplib.HasCredentials(cfg.TokensDir(), src.Identifier) {
+			return fmt.Sprintf("Skipping %s (no credentials — run 'add-imap' first)", src.Identifier), nil
+		}
+	}
+	return "", nil
 }
 
 func init() {

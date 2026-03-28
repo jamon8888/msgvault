@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -146,14 +148,40 @@ func TestSanitizeEmail(t *testing.T) {
 		want  string
 	}{
 		{"user@example.com", "user@example.com"},
-		{"../evil", "_.._evil"},
+		// / replaced first, then .. → _.._; double underscore before "evil"
+		// because _.._  ends with _ and the original _evil starts with _.
+		{"../evil", "_..__evil"},
 		{"a/b", "a_b"},
 		{"a\\b", "a_b"},
+		// double dot in domain — sanitized in place
+		{"user@sub..domain.com", "user@sub_.._domain.com"},
 	}
 	for _, tt := range tests {
 		got := sanitizeEmail(tt.input)
 		if got != tt.want {
 			t.Errorf("sanitizeEmail(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestSanitizeEmail_NoPathTraversal(t *testing.T) {
+	// None of these should produce a string containing a path separator or
+	// result in a different filepath.Base (i.e. no directory component).
+	inputs := []string{
+		"../../etc/passwd",
+		"../tokens/admin@example.com",
+		"/etc/passwd",
+		"C:\\Windows\\system32",
+		"user@sub..domain.com",
+		"....@example.com",
+	}
+	for _, input := range inputs {
+		result := sanitizeEmail(input)
+		if strings.ContainsAny(result, "/\\") {
+			t.Errorf("sanitizeEmail(%q) = %q still contains path separator", input, result)
+		}
+		if result != filepath.Base(result) {
+			t.Errorf("sanitizeEmail(%q) = %q has directory component (filepath.Base differs)", input, result)
 		}
 	}
 }
@@ -667,4 +695,252 @@ func TestTokenSource_ConcurrentAccess(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// --- IMAPHost ---
+
+func TestIMAPHost_PersonalAccount(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{tokensDir: dir}
+	token := &oauth2.Token{AccessToken: "access", RefreshToken: "refresh"}
+	if err := m.saveToken("user@hotmail.com", token, []string{ScopeIMAPPersonal, "offline_access"}, MicrosoftConsumerTenantID); err != nil {
+		t.Fatal(err)
+	}
+	host, err := m.IMAPHost("user@hotmail.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "outlook.office.com" {
+		t.Errorf("IMAPHost = %q, want %q", host, "outlook.office.com")
+	}
+}
+
+func TestIMAPHost_OrgAccount(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{tokensDir: dir}
+	token := &oauth2.Token{AccessToken: "access", RefreshToken: "refresh"}
+	if err := m.saveToken("user@company.com", token, []string{ScopeIMAPOrg, "offline_access"}, "org-tenant"); err != nil {
+		t.Fatal(err)
+	}
+	host, err := m.IMAPHost("user@company.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "outlook.office365.com" {
+		t.Errorf("IMAPHost = %q, want %q", host, "outlook.office365.com")
+	}
+}
+
+func TestIMAPHost_NoToken(t *testing.T) {
+	m := &Manager{tokensDir: t.TempDir()}
+	_, err := m.IMAPHost("nobody@example.com")
+	if err == nil {
+		t.Fatal("expected error for missing token")
+	}
+}
+
+// IMAPHost with no scopes saved falls back to org host (default).
+func TestIMAPHost_NoScopesFallsBackToOrg(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{tokensDir: dir}
+	token := &oauth2.Token{AccessToken: "access"}
+	if err := m.saveToken("user@company.com", token, nil, "org-tenant"); err != nil {
+		t.Fatal(err)
+	}
+	host, err := m.IMAPHost("user@company.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "outlook.office365.com" {
+		t.Errorf("IMAPHost = %q, want %q", host, "outlook.office365.com")
+	}
+}
+
+// --- TokenSource edge cases ---
+
+func TestTokenSource_MissingToken(t *testing.T) {
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: t.TempDir(),
+		logger:    slog.Default(),
+	}
+	_, err := m.TokenSource(t.Context(), "nobody@example.com")
+	if err == nil {
+		t.Fatal("expected error for missing token")
+	}
+	if !strings.Contains(err.Error(), "no valid token") {
+		t.Errorf("error = %q, want it to mention 'no valid token'", err.Error())
+	}
+}
+
+// Pre-migration tokens without scopes fall back to email-based scope detection.
+func TestTokenSource_EmptyScopesFallback(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: dir,
+		logger:    slog.Default(),
+	}
+	token := &oauth2.Token{AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer"}
+	if err := m.saveToken("user@outlook.com", token, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	ts, err := m.TokenSource(t.Context(), "user@outlook.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ts == nil {
+		t.Fatal("TokenSource returned nil")
+	}
+}
+
+// --- Authorize edge cases ---
+
+func TestAuthorize_BrowserFlowError(t *testing.T) {
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		logger:          slog.Default(),
+		verifyIDTokenFn: testVerifyFn,
+	}
+	wantErr := errors.New("user denied access")
+	m.browserFlowFn = func(_ context.Context, _ string, _ []string) (*oauth2.Token, string, error) {
+		return nil, "", wantErr
+	}
+	err := m.Authorize(t.Context(), "user@company.com")
+	if !errors.Is(err, wantErr) {
+		t.Errorf("Authorize error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestAuthorize_ContextCancelled(t *testing.T) {
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		logger:          slog.Default(),
+		verifyIDTokenFn: testVerifyFn,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	m.browserFlowFn = func(ctx context.Context, _ string, _ []string) (*oauth2.Token, string, error) {
+		return nil, "", ctx.Err()
+	}
+	err := m.Authorize(ctx, "user@company.com")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Authorize error = %v, want context.Canceled", err)
+	}
+}
+
+// Scope correction triggers a second browser flow; a TokenMismatchError on
+// that second flow should propagate rather than be swallowed.
+func TestAuthorize_ScopeCorrectionMismatchOnReauth(t *testing.T) {
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		logger:          slog.Default(),
+		verifyIDTokenFn: testVerifyFn,
+	}
+	callCount := 0
+	m.browserFlowFn = func(_ context.Context, email string, _ []string) (*oauth2.Token, string, error) {
+		callCount++
+		var claimsEmail string
+		if callCount == 1 {
+			claimsEmail = email // first flow succeeds, tid triggers correction
+		} else {
+			claimsEmail = "someone-else@other.com" // second flow authenticates wrong account
+		}
+		idToken := makeIDToken(map[string]any{"email": claimsEmail, "tid": MicrosoftConsumerTenantID})
+		tok := (&oauth2.Token{AccessToken: "tok", TokenType: "Bearer"}).
+			WithExtra(map[string]any{"id_token": idToken})
+		return tok, "nonce", nil
+	}
+	err := m.Authorize(t.Context(), "user@custom-domain.com")
+	if err == nil {
+		t.Fatal("expected error when re-auth produces wrong email")
+	}
+	var mismatch *TokenMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Errorf("expected *TokenMismatchError, got %T: %v", err, err)
+	}
+}
+
+// --- resolveTokenEmail edge cases ---
+
+func TestResolveTokenEmail_MissingIDToken(t *testing.T) {
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		verifyIDTokenFn: testVerifyFn,
+	}
+	token := &oauth2.Token{AccessToken: "test", TokenType: "Bearer"} // no id_token extra
+	_, _, err := m.resolveTokenEmail(t.Context(), "user@example.com", token, "nonce")
+	if err == nil {
+		t.Fatal("expected error for missing id_token")
+	}
+	if !strings.Contains(err.Error(), "no id_token") {
+		t.Errorf("error = %q, want mention of 'no id_token'", err.Error())
+	}
+}
+
+func TestResolveTokenEmail_NeitherEmailNorUPN(t *testing.T) {
+	m := &Manager{
+		clientID:        "test-client",
+		tenantID:        "common",
+		tokensDir:       t.TempDir(),
+		verifyIDTokenFn: testVerifyFn,
+	}
+	// ID token has only tid — no email or preferred_username.
+	idToken := makeIDToken(map[string]any{"tid": "some-tenant"})
+	token := (&oauth2.Token{AccessToken: "test", TokenType: "Bearer"}).
+		WithExtra(map[string]any{"id_token": idToken})
+	_, _, err := m.resolveTokenEmail(t.Context(), "user@example.com", token, "nonce")
+	if err == nil {
+		t.Fatal("expected error when neither email nor preferred_username is present")
+	}
+	if !strings.Contains(err.Error(), "preferred_username") {
+		t.Errorf("error = %q, want mention of 'preferred_username'", err.Error())
+	}
+}
+
+// --- peekTIDFromJWT edge cases ---
+
+func TestPeekTIDFromJWT_TooFewParts(t *testing.T) {
+	for _, input := range []string{"onlyone", "header.payload"} {
+		_, err := peekTIDFromJWT(input)
+		if err == nil {
+			t.Errorf("peekTIDFromJWT(%q): expected error for malformed JWT", input)
+		}
+	}
+}
+
+func TestPeekTIDFromJWT_TooManyParts(t *testing.T) {
+	_, err := peekTIDFromJWT("a.b.c.d")
+	if err == nil {
+		t.Error("expected error for JWT with more than 3 parts")
+	}
+}
+
+func TestPeekTIDFromJWT_InvalidBase64Payload(t *testing.T) {
+	_, err := peekTIDFromJWT("header.!!!not-base64!!!.sig")
+	if err == nil {
+		t.Fatal("expected error for invalid base64 payload")
+	}
+}
+
+func TestPeekTIDFromJWT_MissingTIDClaim(t *testing.T) {
+	// Valid JWT but payload has no "tid" field.
+	idToken := makeIDToken(map[string]any{"email": "user@example.com"})
+	_, err := peekTIDFromJWT(idToken)
+	if err == nil {
+		t.Fatal("expected error for JWT without tid claim")
+	}
+	if !strings.Contains(err.Error(), "no tid claim") {
+		t.Errorf("error = %q, want mention of 'no tid claim'", err.Error())
+	}
 }
