@@ -326,7 +326,10 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 	server := &http.Server{Addr: "localhost:" + redirectPort, Handler: mux}
 	go func() {
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			errChan <- err
+			select {
+			case errChan <- err:
+			default:
+			}
 		}
 	}()
 	defer func() { _ = server.Shutdown(ctx) }()
