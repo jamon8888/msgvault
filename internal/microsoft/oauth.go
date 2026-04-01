@@ -41,9 +41,6 @@ const (
 	callbackPath = "/callback/microsoft"
 )
 
-// ScopeIMAP is the organizational IMAP scope (kept for backward compatibility).
-var ScopeIMAP = ScopeIMAPOrg
-
 // scopesForEmail returns the OAuth scopes appropriate for the given email.
 // Personal Microsoft accounts use a different IMAP resource than org accounts.
 func scopesForEmail(email string) []string {
@@ -749,8 +746,8 @@ func openBrowser(rawURL string) error {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("refused to open URL with scheme %q", parsed.Scheme)
+	if scheme != "https" {
+		return fmt.Errorf("refused to open URL with scheme %q (only https is allowed)", parsed.Scheme)
 	}
 
 	var cmd *exec.Cmd
