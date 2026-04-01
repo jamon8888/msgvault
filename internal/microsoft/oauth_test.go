@@ -1027,6 +1027,27 @@ func TestDeleteToken_NoTokenFile(t *testing.T) {
 
 // --- peekTIDFromJWT edge cases ---
 
+func TestTokenSource_SaveFailureReturnsError(t *testing.T) {
+	// Verify saveToken returns an error when the tokens directory is read-only.
+	dir := t.TempDir()
+	m := &Manager{tokensDir: dir, logger: slog.Default()}
+	token := &oauth2.Token{AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer"}
+	if err := m.saveToken("user@example.com", token, nil, ""); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+
+	// Make tokens directory read-only so subsequent writes fail.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(dir, 0700) }()
+
+	err := m.saveToken("user@example.com", token, nil, "")
+	if err == nil {
+		t.Fatal("expected error when tokens dir is read-only")
+	}
+}
+
 func TestPeekTIDFromJWT_TooFewParts(t *testing.T) {
 	for _, input := range []string{"onlyone", "header.payload"} {
 		_, err := peekTIDFromJWT(input)

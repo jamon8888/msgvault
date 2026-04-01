@@ -296,7 +296,7 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 
 		if changed {
 			if saveErr := m.saveToken(email, tok, scopes, tf.TenantID); saveErr != nil {
-				m.logger.Warn("failed to save refreshed token", "email", email, "error", saveErr)
+				return "", fmt.Errorf("save refreshed microsoft token for %s: %w (token refreshed but not persisted — re-run may require re-authorization)", email, saveErr)
 			}
 		}
 
