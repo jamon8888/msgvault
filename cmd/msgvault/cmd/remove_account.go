@@ -186,7 +186,7 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 func resolveSource(
 	s *store.Store, identifier, sourceType string,
 ) (*store.Source, error) {
-	sources, err := s.GetSourcesByIdentifier(identifier)
+	sources, err := s.GetSourcesByIdentifierOrDisplayName(identifier)
 	if err != nil {
 		return nil, fmt.Errorf("look up account: %w", err)
 	}
