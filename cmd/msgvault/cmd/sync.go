@@ -46,7 +46,7 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
 		}
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 
 		if err := s.InitSchema(); err != nil {
 			return fmt.Errorf("init schema: %w", err)
@@ -216,7 +216,7 @@ func runIncrementalSync(ctx context.Context, s *store.Store, getOAuthMgr func(st
 		gmail.WithLogger(logger),
 		gmail.WithRateLimiter(rateLimiter),
 	)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Set up sync options
 	opts := sync.DefaultOptions()
