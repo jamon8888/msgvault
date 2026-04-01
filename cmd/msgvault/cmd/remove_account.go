@@ -131,30 +131,44 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 			)
 		}
 	case "imap":
-		credPath := imaplib.CredentialsPath(
-			cfg.TokensDir(), source.Identifier,
-		)
-		if err := os.Remove(credPath); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr,
-				"Warning: could not remove credentials file %s: %v\n",
-				credPath, err,
-			)
-		}
-		// Also clean up Microsoft OAuth token if this was an XOAUTH2 source
 		if source.SyncConfig.Valid && source.SyncConfig.String != "" {
 			imapCfg, parseErr := imaplib.ConfigFromJSON(source.SyncConfig.String)
-			if parseErr == nil && imapCfg.EffectiveAuthMethod() == imaplib.AuthXOAuth2 {
-				msMgr := microsoft.NewManager(
-					cfg.Microsoft.ClientID,
-					cfg.Microsoft.EffectiveTenantID(),
-					cfg.TokensDir(),
-					logger,
-				)
-				if err := msMgr.DeleteToken(imapCfg.Username); err != nil {
-					fmt.Fprintf(os.Stderr,
-						"Warning: could not remove Microsoft token: %v\n", err,
+			if parseErr == nil {
+				switch imapCfg.EffectiveAuthMethod() {
+				case imaplib.AuthXOAuth2:
+					msMgr := microsoft.NewManager(
+						cfg.Microsoft.ClientID,
+						cfg.Microsoft.EffectiveTenantID(),
+						cfg.TokensDir(),
+						logger,
 					)
+					if err := msMgr.DeleteToken(imapCfg.Username); err != nil {
+						fmt.Fprintf(os.Stderr,
+							"Warning: could not remove Microsoft token: %v\n", err,
+						)
+					}
+				default:
+					credPath := imaplib.CredentialsPath(
+						cfg.TokensDir(), source.Identifier,
+					)
+					if err := os.Remove(credPath); err != nil && !os.IsNotExist(err) {
+						fmt.Fprintf(os.Stderr,
+							"Warning: could not remove credentials file %s: %v\n",
+							credPath, err,
+						)
+					}
 				}
+			}
+		} else {
+			// No sync_config — try removing credential file as fallback.
+			credPath := imaplib.CredentialsPath(
+				cfg.TokensDir(), source.Identifier,
+			)
+			if err := os.Remove(credPath); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr,
+					"Warning: could not remove credentials file %s: %v\n",
+					credPath, err,
+				)
 			}
 		}
 	}
