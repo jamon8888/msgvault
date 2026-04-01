@@ -718,7 +718,8 @@ func (m *Manager) revokeToken(refreshToken, tenantID string) error {
 }
 
 func sanitizeEmail(email string) string {
-	safe := strings.ReplaceAll(email, "/", "_")
+	safe := strings.ReplaceAll(email, "\x00", "_")
+	safe = strings.ReplaceAll(safe, "/", "_")
 	safe = strings.ReplaceAll(safe, "\\", "_")
 	safe = strings.ReplaceAll(safe, "..", "_.._")
 	// filepath.Base strips any residual directory components as a final

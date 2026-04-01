@@ -155,6 +155,8 @@ func TestSanitizeEmail(t *testing.T) {
 		{"a\\b", "a_b"},
 		// double dot in domain — sanitized in place
 		{"user@sub..domain.com", "user@sub_.._domain.com"},
+		// null byte replaced before other transforms
+		{"user\x00@evil.com", "user_@evil.com"},
 	}
 	for _, tt := range tests {
 		got := sanitizeEmail(tt.input)
@@ -174,6 +176,7 @@ func TestSanitizeEmail_NoPathTraversal(t *testing.T) {
 		"C:\\Windows\\system32",
 		"user@sub..domain.com",
 		"....@example.com",
+		"user\x00@evil.com",
 	}
 	for _, input := range inputs {
 		result := sanitizeEmail(input)
