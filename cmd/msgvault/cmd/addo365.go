@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	imapclient "github.com/wesm/msgvault/internal/imap"
@@ -83,17 +84,20 @@ Examples:
 
 		identifier := imapCfg.Identifier()
 
-		// If an IMAP source with this email already exists (matched by display
-		// name), reuse it and update its identifier + config in place. This
-		// prevents duplicate sources when re-authorizing after a host change
+		// If a Microsoft IMAP source with this email already exists (matched by
+		// display name AND XOAUTH2 config), reuse it and update its identifier +
+		// config in place. This handles re-authorization after a host change
 		// (e.g. personal vs org scope correction changes the IMAP hostname).
+		// We require the existing source to already be a Microsoft XOAUTH2 source
+		// so that a non-Microsoft IMAP source sharing the same display name is
+		// never silently repointed to Outlook XOAUTH2.
 		var source *store.Source
 		existing, err := s.GetSourcesByDisplayName(email)
 		if err != nil {
 			return fmt.Errorf("look up existing source: %w", err)
 		}
 		for _, src := range existing {
-			if src.SourceType == "imap" {
+			if src.SourceType == "imap" && isMicrosoftIMAPSource(src, email) {
 				source = src
 				break
 			}
@@ -130,6 +134,22 @@ Examples:
 
 		return nil
 	},
+}
+
+// isMicrosoftIMAPSource returns true only if src is an IMAP source already
+// configured for Microsoft XOAUTH2 with the given username. This prevents
+// a non-Microsoft IMAP source (e.g. a password-auth source) that happens to
+// share the same display name from being silently repointed to Outlook XOAUTH2.
+func isMicrosoftIMAPSource(src *store.Source, email string) bool {
+	if !src.SyncConfig.Valid {
+		return false
+	}
+	cfg, err := imapclient.ConfigFromJSON(src.SyncConfig.String)
+	if err != nil {
+		return false
+	}
+	return cfg.EffectiveAuthMethod() == imapclient.AuthXOAuth2 &&
+		strings.EqualFold(cfg.Username, email)
 }
 
 func init() {
