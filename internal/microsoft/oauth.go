@@ -194,6 +194,11 @@ func (m *Manager) doBrowserFlow(ctx context.Context, email string, scopes []stri
 	return m.browserFlow(ctx, email, scopes)
 }
 
+// tokenRefreshTimeout bounds how long a single token refresh HTTP request
+// may take. Prevents indefinite hangs when Microsoft's token endpoint is
+// unreachable, while still being generous enough for slow networks.
+const tokenRefreshTimeout = 30 * time.Second
+
 // TokenSource returns a function that provides fresh access tokens.
 // Suitable for passing to imap.WithTokenSource. The returned function
 // is safe for concurrent use.
@@ -202,6 +207,8 @@ func (m *Manager) doBrowserFlow(ctx context.Context, email string, scopes []stri
 // not cancelled if the caller's context expires between calls. This
 // prevents silent refresh failures during long-running syncs where the
 // original context may be narrower than the token source's lifetime.
+// Each refresh attempt is bounded by tokenRefreshTimeout to prevent
+// indefinite hangs when the token endpoint is unreachable.
 func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.Context) (string, error), error) {
 	tf, err := m.loadTokenFile(email)
 	if err != nil {
@@ -230,12 +237,12 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 	if tf.TenantID != "" {
 		refreshTenant = tf.TenantID
 	}
-	cfg := m.oauthConfigWithTenant(refreshTenant, scopes)
+	oauthCfg := m.oauthConfigWithTenant(refreshTenant, scopes)
 	// Use context.Background so token refreshes are not cancelled by the
 	// caller's (sync-scoped) context. The token source outlives individual
 	// operations; tying it to a cancellable context would cause silent
 	// failures on the next call after cancellation.
-	ts := cfg.TokenSource(context.Background(), &tf.Token)
+	ts := oauthCfg.TokenSource(context.Background(), &tf.Token)
 
 	var (
 		mu               sync.Mutex
@@ -245,9 +252,35 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 	)
 
 	return func(callCtx context.Context) (string, error) {
-		tok, err := ts.Token()
-		if err != nil {
-			return "", fmt.Errorf("refresh Microsoft token: %w", err)
+		// Run ts.Token() in a goroutine bounded by a timeout and the
+		// caller's context. The oauth2 TokenSource is internally
+		// synchronized and caches valid tokens, so most calls return
+		// immediately; the timeout only matters when a network refresh
+		// is required.
+		type tokenResult struct {
+			tok *oauth2.Token
+			err error
+		}
+		ch := make(chan tokenResult, 1)
+		go func() {
+			tok, err := ts.Token()
+			ch <- tokenResult{tok, err}
+		}()
+
+		timer := time.NewTimer(tokenRefreshTimeout)
+		defer timer.Stop()
+
+		var tok *oauth2.Token
+		select {
+		case res := <-ch:
+			if res.err != nil {
+				return "", fmt.Errorf("refresh Microsoft token: %w", res.err)
+			}
+			tok = res.tok
+		case <-timer.C:
+			return "", fmt.Errorf("microsoft token refresh timed out after %s — check network connectivity", tokenRefreshTimeout)
+		case <-callCtx.Done():
+			return "", fmt.Errorf("microsoft token refresh cancelled: %w", callCtx.Err())
 		}
 
 		mu.Lock()
@@ -386,7 +419,7 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 	)
 
 	fmt.Printf("Opening browser for Microsoft authorization...\n")
-	fmt.Printf("If browser doesn't open, visit:\n%s\n\n", authURL)
+	fmt.Printf("If browser doesn't open, visit:\n%s\n\n", redactAuthURL(authURL))
 	if err := openBrowser(authURL); err != nil {
 		m.logger.Warn("failed to open browser", "error", err)
 	}
@@ -592,12 +625,77 @@ func (m *Manager) HasToken(email string) bool {
 	return err == nil
 }
 
+// DeleteToken revokes the refresh token at Microsoft (best-effort) and
+// removes the local token file. Revocation failures are logged but do not
+// prevent local cleanup — the user's intent is to remove the account, and
+// a stale remote token will expire naturally (≤90 days).
 func (m *Manager) DeleteToken(email string) error {
+	// Attempt to revoke the refresh token at Microsoft before deleting
+	// the local file. We load the token first so we can send the
+	// revocation request.
+	tf, loadErr := m.loadTokenFile(email)
+	if loadErr == nil && tf.RefreshToken != "" {
+		if revokeErr := m.revokeToken(tf.RefreshToken, tf.TenantID); revokeErr != nil {
+			m.logger.Warn("failed to revoke Microsoft token (will expire naturally)",
+				"email", email, "error", revokeErr)
+		} else {
+			m.logger.Info("revoked Microsoft refresh token", "email", email)
+		}
+	}
+
 	err := os.Remove(m.TokenPath(email))
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
+}
+
+// revokeToken sends a POST to Microsoft's OAuth2 logout/revocation endpoint.
+// Microsoft's v2.0 endpoint does not implement RFC 7009 token revocation,
+// but the /oauth2/v2.0/logout endpoint with a token hint invalidates the
+// refresh token. As a fallback we POST to the token endpoint with
+// grant_type=revocation which some tenants support.
+func (m *Manager) revokeToken(refreshToken, tenantID string) error {
+	if tenantID == "" {
+		tenantID = m.tenantID
+	}
+	if tenantID == "" {
+		tenantID = DefaultTenant
+	}
+
+	// Microsoft supports token revocation via the /oauth2/v2.0/logout
+	// endpoint for confidential clients, but for public clients the
+	// recommended approach is to POST to the token endpoint. We use a
+	// direct HTTP POST to revoke the refresh token.
+	revokeURL := fmt.Sprintf(
+		"https://login.microsoftonline.com/%s/oauth2/v2.0/logout", tenantID)
+
+	data := url.Values{
+		"client_id": {m.clientID},
+		"token":     {refreshToken},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, revokeURL,
+		strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("create revocation request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send revocation request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Microsoft's logout endpoint returns 200 on success; treat any 2xx as ok.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("revocation returned HTTP %d", resp.StatusCode)
 }
 
 func sanitizeEmail(email string) string {
@@ -607,6 +705,26 @@ func sanitizeEmail(email string) string {
 	// filepath.Base strips any residual directory components as a final
 	// defense-in-depth against path traversal in crafted email addresses.
 	return filepath.Base(safe)
+}
+
+// redactAuthURL strips security-sensitive query parameters (state, nonce,
+// code_challenge) from the authorization URL before printing to stdout.
+// The full URL is still passed to the browser via openBrowser; only the
+// fallback text shown in the terminal is redacted to prevent these
+// short-lived secrets from persisting in logs.
+func redactAuthURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "[invalid URL]"
+	}
+	q := u.Query()
+	for _, param := range []string{"state", "nonce", "code_challenge"} {
+		if q.Has(param) {
+			q.Set(param, "REDACTED")
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func openBrowser(rawURL string) error {

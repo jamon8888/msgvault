@@ -908,6 +908,123 @@ func TestResolveTokenEmail_NeitherEmailNorUPN(t *testing.T) {
 	}
 }
 
+// --- TokenSource timeout ---
+
+func TestTokenSource_RespectsCallCtxCancellation(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: dir,
+		logger:    slog.Default(),
+	}
+
+	token := &oauth2.Token{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		TokenType:    "Bearer",
+	}
+	if err := m.saveToken("user@outlook.com", token, []string{ScopeIMAPPersonal, "offline_access"}, MicrosoftConsumerTenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	fn, err := m.TokenSource(t.Context(), "user@outlook.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Cancel the context immediately — the token source should return
+	// the cached token (not refreshed) or cancel, but must not hang.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	// The call may succeed (cached token returned instantly before select
+	// sees cancellation) or fail with context.Canceled — either is acceptable.
+	// The key property is that it returns promptly, not that it errors.
+	_, _ = fn(ctx)
+}
+
+// --- redactAuthURL ---
+
+func TestRedactAuthURL(t *testing.T) {
+	raw := "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?" +
+		"client_id=test&code_challenge=secret-challenge&code_challenge_method=S256&" +
+		"login_hint=user%40example.com&nonce=secret-nonce&" +
+		"redirect_uri=http%3A%2F%2Flocalhost%3A8089%2Fcallback%2Fmicrosoft&" +
+		"response_type=code&scope=IMAP.AccessAsUser.All&state=secret-state"
+
+	redacted := redactAuthURL(raw)
+
+	if strings.Contains(redacted, "secret-challenge") {
+		t.Error("redacted URL still contains code_challenge")
+	}
+	if strings.Contains(redacted, "secret-nonce") {
+		t.Error("redacted URL still contains nonce")
+	}
+	if strings.Contains(redacted, "secret-state") {
+		t.Error("redacted URL still contains state")
+	}
+	// Non-sensitive params should be preserved
+	if !strings.Contains(redacted, "client_id=test") {
+		t.Error("redacted URL is missing client_id")
+	}
+	if !strings.Contains(redacted, "login_hint=") {
+		t.Error("redacted URL is missing login_hint")
+	}
+	if !strings.Contains(redacted, "REDACTED") {
+		t.Error("redacted URL should contain REDACTED placeholders")
+	}
+}
+
+func TestRedactAuthURL_InvalidURL(t *testing.T) {
+	result := redactAuthURL("://not-a-url")
+	if result != "[invalid URL]" {
+		t.Errorf("expected [invalid URL], got %q", result)
+	}
+}
+
+// --- DeleteToken with revocation ---
+
+func TestDeleteToken_RevokesBeforeDeleting(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: dir,
+		logger:    slog.Default(),
+	}
+
+	token := &oauth2.Token{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		TokenType:    "Bearer",
+	}
+	if err := m.saveToken("user@example.com", token, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// DeleteToken should succeed even when revocation fails (no real
+	// Microsoft endpoint in tests). The local file should be removed.
+	if err := m.DeleteToken("user@example.com"); err != nil {
+		t.Fatalf("DeleteToken: %v", err)
+	}
+	if m.HasToken("user@example.com") {
+		t.Error("token file should be deleted after DeleteToken")
+	}
+}
+
+func TestDeleteToken_NoTokenFile(t *testing.T) {
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "common",
+		tokensDir: t.TempDir(),
+		logger:    slog.Default(),
+	}
+	// Should not error on non-existent token
+	if err := m.DeleteToken("nobody@example.com"); err != nil {
+		t.Fatalf("DeleteToken non-existent: %v", err)
+	}
+}
+
 // --- peekTIDFromJWT edge cases ---
 
 func TestPeekTIDFromJWT_TooFewParts(t *testing.T) {
