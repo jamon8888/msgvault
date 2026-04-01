@@ -232,9 +232,15 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 	if tf.TenantID != "" && len(tf.Scopes) > 0 {
 		correctScope := imapScopeForTenant(tf.TenantID)
 		if tf.Scopes[0] != correctScope {
+			m.logger.Debug("stale IMAP scope detected",
+				"email", email,
+				"current_scope", tf.Scopes[0],
+				"expected_scope", correctScope,
+				"tenant_id", tf.TenantID,
+			)
 			return nil, fmt.Errorf(
-				"token for %s has stale IMAP scope %q (expected %q for tenant %s) — run 'msgvault add-o365 %s' to re-authorize",
-				email, tf.Scopes[0], correctScope, tf.TenantID, email,
+				"token for %s has stale IMAP scope — run 'msgvault add-o365 %s' to re-authorize",
+				email, email,
 			)
 		}
 	}
