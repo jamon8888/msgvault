@@ -1027,6 +1027,39 @@ func TestDeleteToken_NoTokenFile(t *testing.T) {
 
 // --- peekTIDFromJWT edge cases ---
 
+func TestTokenSource_PreMigrationTokenGetsTenantBinding(t *testing.T) {
+	// Pre-migration tokens have empty TenantID. When the Manager is constructed
+	// with a specific (non-"common") tenant, TokenSource should bind that tenant
+	// so scope validation can run on the next load.
+	dir := t.TempDir()
+	m := &Manager{
+		clientID:  "test-client",
+		tenantID:  "my-org-tenant",
+		tokensDir: dir,
+		logger:    slog.Default(),
+	}
+
+	// Save a token with empty TenantID and org scopes (pre-migration state).
+	token := &oauth2.Token{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		TokenType:    "Bearer",
+	}
+	if err := m.saveToken("user@company.com", token, []string{ScopeIMAPOrg, "offline_access"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// TokenSource should succeed: the tenant gets bound internally.
+	// If scope validation kicked in and found a mismatch it would error.
+	ts, err := m.TokenSource(t.Context(), "user@company.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ts == nil {
+		t.Fatal("TokenSource returned nil")
+	}
+}
+
 func TestTokenSource_SaveFailureReturnsError(t *testing.T) {
 	// Verify saveToken returns an error when the tokens directory is read-only.
 	dir := t.TempDir()

@@ -220,6 +220,15 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 		scopes = scopesForEmail(email)
 	}
 
+	// Migrate pre-migration tokens: if the token file has no tenant_id but the
+	// Manager was constructed with a specific tenant (not "common"), bind it.
+	// This allows scope validation to kick in on next load.
+	if tf.TenantID == "" && m.tenantID != "" && m.tenantID != DefaultTenant {
+		tf.TenantID = m.tenantID
+		m.logger.Info("migrating pre-scope-correction token: binding tenant ID",
+			"email", email, "tenant", m.tenantID)
+	}
+
 	// Validate persisted scopes against tenant ID to detect stale tokens
 	// from before scope-correction was added. Tokens without a tenant_id
 	// are pre-migration and skip this check (backward compatible).
