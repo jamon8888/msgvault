@@ -369,6 +369,8 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if r.URL.Query().Get("state") != state {
 			select {
 			case errChan <- fmt.Errorf("state mismatch: possible CSRF attack"):
