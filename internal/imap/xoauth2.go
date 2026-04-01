@@ -1,6 +1,8 @@
 package imap
 
 import (
+	"log/slog"
+
 	"github.com/emersion/go-sasl"
 )
 
@@ -34,5 +36,8 @@ func (c *xoauth2Client) Next(challenge []byte) ([]byte, error) {
 	// terminate normally, after which the server sends NO with a human-readable
 	// error. Returning an error instead would abort the exchange mid-flight and
 	// surface our internal message rather than the server's diagnostic payload.
+	if len(challenge) > 0 {
+		slog.Debug("XOAUTH2 authentication failed", "server_challenge", string(challenge))
+	}
 	return []byte{}, nil
 }
