@@ -328,6 +328,11 @@ func (m *Manager) IMAPHost(email string) (string, error) {
 }
 
 func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string) (*oauth2.Token, string, error) {
+	// Bound the entire browser flow to 5 minutes. This prevents port 8089
+	// from staying bound indefinitely if the user abandons authorization.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
 	// Bind the listener before constructing the auth URL so that the redirect
 	// URI embedded in the authorization request matches exactly. Failing fast
 	// here produces a clear error instead of a silent hang.
@@ -417,7 +422,7 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 		// Use a fresh context for shutdown: the caller's ctx may already be
 		// cancelled (e.g. Ctrl-C), in which case Shutdown(ctx) returns
 		// immediately without waiting for in-flight requests to drain.
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
