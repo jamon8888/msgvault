@@ -27,10 +27,6 @@ func NewExtractor(format string) (Extractor, error) {
 
 type PDFExtractor struct{}
 
-func (e *PDFExtractor) ExtractText(path string) (string, error) {
-	return "mock text", nil
-}
-
 type DOCXExtractor struct{}
 
 func (e *DOCXExtractor) ExtractText(path string) (string, error) {

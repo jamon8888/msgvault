@@ -16,6 +16,9 @@ func TestExtractorInterface(t *testing.T) {
 }
 
 func TestExtractPDF(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real PDF extraction test")
+	}
 	e, err := NewExtractor("pdf")
 	if err != nil {
 		t.Errorf("NewExtractor failed: %v", err)
