@@ -213,7 +213,7 @@ func NewDefaultConfig() *Config {
 			Formats:    []string{"pdf", "docx", "txt"},
 		},
 		Embedding: EmbeddingConfig{
-			Enabled:    true,
+			Enabled:    false,
 			Model:      "nomic-embed-text",
 			Dimensions: 1536,
 			OllamaURL:  "http://localhost:11434",
