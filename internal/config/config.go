@@ -70,14 +70,17 @@ type RemoteConfig struct {
 
 // Config represents the msgvault configuration.
 type Config struct {
-	Data      DataConfig        `toml:"data"`
-	OAuth     OAuthConfig       `toml:"oauth"`
-	Microsoft MicrosoftConfig   `toml:"microsoft"`
-	Sync      SyncConfig        `toml:"sync"`
-	Chat      ChatConfig        `toml:"chat"`
-	Server    ServerConfig      `toml:"server"`
-	Remote    RemoteConfig      `toml:"remote"`
-	Accounts  []AccountSchedule `toml:"accounts"`
+	Data       DataConfig        `toml:"data"`
+	OAuth      OAuthConfig       `toml:"oauth"`
+	Microsoft  MicrosoftConfig   `toml:"microsoft"`
+	Sync       SyncConfig        `toml:"sync"`
+	Extraction ExtractionConfig  `toml:"extraction"`
+	Embedding  EmbeddingConfig   `toml:"embedding"`
+	Vector     VectorConfig      `toml:"vector"`
+	Chat       ChatConfig        `toml:"chat"`
+	Server     ServerConfig      `toml:"server"`
+	Remote     RemoteConfig      `toml:"remote"`
+	Accounts   []AccountSchedule `toml:"accounts"`
 
 	// Computed paths (not from config file)
 	HomeDir    string `toml:"-"`
@@ -157,6 +160,28 @@ type SyncConfig struct {
 	RateLimitQPS int `toml:"rate_limit_qps"`
 }
 
+// ExtractionConfig holds configuration for attachment extraction.
+type ExtractionConfig struct {
+	Enabled    bool     `toml:"enabled"`
+	Mode       string   `toml:"mode"`        // "on_sync", "on_demand", "hybrid"
+	RecentDays int      `toml:"recent_days"` // Days to look back for on_sync mode
+	Formats    []string `toml:"formats"`     // Supported formats
+}
+
+// EmbeddingConfig holds configuration for text embedding generation.
+type EmbeddingConfig struct {
+	Enabled    bool   `toml:"enabled"`
+	Model      string `toml:"model"`      // Ollama model name
+	Dimensions int    `toml:"dimensions"` // Embedding dimension
+	OllamaURL  string `toml:"ollama_url"` // Ollama server URL
+}
+
+// VectorConfig holds configuration for vector storage.
+type VectorConfig struct {
+	Store     string `toml:"store"`      // "duckdb"
+	IndexType string `toml:"index_type"` // "hnsw"
+}
+
 // DefaultHome returns the default msgvault home directory.
 // Respects MSGVAULT_HOME environment variable and expands ~ in its value.
 func DefaultHome() string {
@@ -180,6 +205,22 @@ func NewDefaultConfig() *Config {
 		},
 		Sync: SyncConfig{
 			RateLimitQPS: 5,
+		},
+		Extraction: ExtractionConfig{
+			Enabled:    false,
+			Mode:       "hybrid",
+			RecentDays: 30,
+			Formats:    []string{"pdf", "docx", "txt"},
+		},
+		Embedding: EmbeddingConfig{
+			Enabled:    true,
+			Model:      "nomic-embed-text",
+			Dimensions: 1536,
+			OllamaURL:  "http://localhost:11434",
+		},
+		Vector: VectorConfig{
+			Store:     "duckdb",
+			IndexType: "hnsw",
 		},
 		Chat: ChatConfig{
 			Server:     "http://localhost:11434",
