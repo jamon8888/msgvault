@@ -39,7 +39,8 @@ Add optional attachment content extraction and embedding-based semantic search t
 **Purpose**: Extract text from attachments
 
 **Supported formats (Phase 1)**:
-- PDF - using `gen2brain/go-fitz` (MuPDF bindings, fast)
+- PDF - using `github.com/gen2brain/go-fitz` (MuPDF bindings, fast)
+  - Build tag `nocgo` for pure Go (requires `libffi` and `libmupdf` at runtime)
 - DOCX - using `gomutex/godocx` (pure Go)
 - TXT (simple text reading)
 
@@ -47,7 +48,7 @@ Add optional attachment content extraction and embedding-based semantic search t
 
 **Implementation**:
 - `extractor.go` - Main extraction service
-- `fitz.go` - PDF extraction via go-fitz
+- `fitz.go` - PDF extraction via go-fitz (using `doc.Text(page)` for text extraction)
 - `docx.go` - DOCX extraction via godocx
 - `chunker.go` - Split text into chunks (8192-token chunks, 512-token overlap)
 
@@ -67,10 +68,29 @@ Add optional attachment content extraction and embedding-based semantic search t
 **Config**:
 ```toml
 [embedding]
-model = "nomic-embed-text"  # Default model
+model = "nomic-embed-text"  # Default model (1536 dimensions)
 dimensions = 1536
 ollama_url = "http://localhost:11434"
 ```
+
+**Ollama API Usage**:
+```go
+// Request to http://localhost:11434/api/embed
+type EmbedRequest struct {
+    Model   string   `json:"model"`
+    Input   string   `json:"input"`  // or []string for batch
+}
+
+type EmbedResponse struct {
+    Model      string    `json:"model"`
+    Embeddings [][]float `json:"embeddings"`
+    TotalDuration int64  `json:"total_duration"` // nanoseconds
+}
+
+// Or OpenAI-compatible: http://localhost:11434/v1/embeddings
+```
+
+**Note**: Available models include `nomic-embed-text`, `mxbai-embed-large`, `bge-m3`
 
 ### 3. Vector Store (`internal/vector/`)
 
@@ -85,6 +105,33 @@ ollama_url = "http://localhost:11434"
 **Tables**:
 - `attachment_vectors` - (id, message_id, attachment_id, chunk_index, embedding)
 - `attachment_text` - (id, message_id, attachment_id, chunk_text, metadata)
+
+**SQL Setup**:
+```sql
+-- Install and load VSS extension
+INSTALL vss;
+LOAD vss;
+
+-- Create table with vector column
+CREATE TABLE attachment_vectors (
+    id BIGINT,
+    message_id BIGINT,
+    attachment_id BIGINT,
+    chunk_index INTEGER,
+    embedding FLOAT[1536]
+);
+
+-- Create HNSW index (uses l2sq metric by default)
+CREATE INDEX idx_ann ON attachment_vectors USING HNSW (embedding);
+
+-- Or use cosine metric for similarity search
+CREATE INDEX idx_ann_cosine ON attachment_vectors USING HNSW (embedding) WITH (metric = 'cosine');
+
+-- Semantic search query
+SELECT * FROM attachment_vectors
+ORDER BY array_distance(embedding, query_embedding)
+LIMIT 5;
+```
 
 ### 4. MCP Tools
 
