@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -28,6 +29,13 @@ func WithTokenSource(fn func(ctx context.Context) (string, error)) Option {
 	return func(c *Client) { c.tokenSource = fn }
 }
 
+// WithDateFilter sets optional date filtering for IMAP searches.
+// These operate on INTERNALDATE (date-only, no time component).
+// Dates should be in YYYY-MM-DD format.
+func WithDateFilter(after, before string) Option {
+	return func(c *Client) { c.afterDate = after; c.beforeDate = before }
+}
+
 // fetchChunkSize is the maximum number of UIDs per UID FETCH command.
 // Large FETCH sets cause server-side timeouts on big mailboxes; chunking
 // keeps each round-trip short.
@@ -43,6 +51,8 @@ type Client struct {
 	password    string
 	tokenSource func(ctx context.Context) (string, error) // XOAUTH2 token callback
 	logger      *slog.Logger
+	afterDate   string // YYYY-MM-DD for SEARCH SINCE
+	beforeDate  string // YYYY-MM-DD for SEARCH BEFORE
 
 	mu               sync.Mutex
 	conn             *imapclient.Client
@@ -261,8 +271,24 @@ func (c *Client) enumerateMailbox(
 		}
 	}
 
+	criteria := &imap.SearchCriteria{}
+	if c.afterDate != "" || c.beforeDate != "" {
+		if c.afterDate != "" {
+			criteria.Sinces = []imap.SearchDate{{
+				Date: parseIMAPDate(c.afterDate),
+			}}
+		}
+		if c.beforeDate != "" {
+			criteria.Befores = []imap.SearchDate{{
+				Date: parseIMAPDate(c.beforeDate),
+			}}
+		}
+		c.logger.Debug("using date-filtered IMAP search",
+			"after", c.afterDate, "before", c.beforeDate)
+	}
+
 	searchData, err := c.conn.UIDSearch(
-		&imap.SearchCriteria{},
+		criteria,
 		nil,
 	).Wait()
 	if err != nil {
@@ -278,7 +304,7 @@ func (c *Client) enumerateMailbox(
 				return nil, selErr
 			}
 			searchData, err = c.conn.UIDSearch(
-				&imap.SearchCriteria{},
+				criteria,
 				nil,
 			).Wait()
 			if err != nil {
@@ -515,6 +541,16 @@ func hasAttr(attrs []imap.MailboxAttr, attr imap.MailboxAttr) bool {
 // compositeID builds a message identifier as "mailbox|uid".
 func compositeID(mailbox string, uid imap.UID) string {
 	return mailbox + "|" + strconv.FormatUint(uint64(uid), 10)
+}
+
+// parseIMAPDate converts YYYY-MM-DD string to time.Time for IMAP SEARCH.
+// IMAP uses dd-MMM-yyyy format (e.g., "01-Jan-2024").
+func parseIMAPDate(dateStr string) time.Time {
+	t, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // parseCompositeID splits a composite message ID into mailbox and UID.

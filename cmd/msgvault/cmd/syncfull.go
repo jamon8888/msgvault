@@ -187,7 +187,7 @@ Examples:
 }
 
 // buildAPIClient creates the appropriate gmail.API client for the given source.
-func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(string) (*oauth.Manager, error)) (gmail.API, error) {
+func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(string) (*oauth.Manager, error), imapAfter, imapBefore string) (gmail.API, error) {
 	switch src.SourceType {
 	case "gmail", "":
 		oauthMgr, err := getOAuthMgr(sourceOAuthApp(src))
@@ -217,6 +217,11 @@ func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(str
 
 		var opts []imaplib.Option
 		opts = append(opts, imaplib.WithLogger(logger))
+
+		// Apply date filtering for IMAP sources.
+		if imapAfter != "" || imapBefore != "" {
+			opts = append(opts, imaplib.WithDateFilter(imapAfter, imapBefore))
+		}
 
 		switch imapCfg.EffectiveAuthMethod() {
 		case imaplib.AuthXOAuth2:
@@ -249,16 +254,24 @@ func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(str
 }
 
 func runFullSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (*oauth.Manager, error), src *store.Source) error {
-	apiClient, err := buildAPIClient(ctx, src, getOAuthMgr)
+	// Build date filters for IMAP (Gmail uses query string instead).
+	imapAfter := ""
+	imapBefore := ""
+	if src.SourceType == "imap" {
+		imapAfter = syncAfter
+		imapBefore = syncBefore
+	}
+
+	apiClient, err := buildAPIClient(ctx, src, getOAuthMgr, imapAfter, imapBefore)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = apiClient.Close() }()
 
-	// Build query from flags (Gmail only).
+	// Build Gmail query from flags (not used for IMAP).
 	query := buildSyncQuery()
 	if query != "" && src.SourceType == "imap" {
-		fmt.Printf("Warning: --query/--before/--after are not supported for IMAP sources and will be ignored.\n\n")
+		fmt.Printf("Warning: --query is not supported for IMAP sources and will be ignored.\n\n")
 		query = ""
 	}
 
