@@ -16,6 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/wesm/msgvault/internal/deletion"
 	"github.com/wesm/msgvault/internal/export"
+	pii "github.com/wesm/msgvault/internal/pii"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
 )
@@ -26,6 +27,7 @@ type handlers struct {
 	engine         query.Engine
 	attachmentsDir string
 	dataDir        string
+	piiFilter      *pii.Filter
 }
 
 // getAccountID looks up a source ID by email address.
@@ -56,6 +58,123 @@ func getIDArg(args map[string]any, key string) (int64, error) {
 		return 0, fmt.Errorf("%s must be a positive integer", key)
 	}
 	return int64(v), nil
+}
+
+// filterMessageSummary applies PII filtering to a MessageSummary.
+func (h *handlers) filterMessageSummary(ctx context.Context, msg query.MessageSummary) query.MessageSummary {
+	if h.piiFilter == nil {
+		return msg
+	}
+
+	// Filter PII from string fields
+	filteredSubject, _ := h.piiFilter.FilterString(ctx, msg.Subject)
+	filteredSnippet, _ := h.piiFilter.FilterString(ctx, msg.Snippet)
+	filteredFromEmail, _ := h.piiFilter.FilterString(ctx, msg.FromEmail)
+	filteredFromName, _ := h.piiFilter.FilterString(ctx, msg.FromName)
+
+	// Filter PII from labels
+	filteredLabels := make([]string, len(msg.Labels))
+	if len(msg.Labels) > 0 {
+		filteredLabels, _ = h.piiFilter.FilterStrings(ctx, msg.Labels)
+	}
+
+	return query.MessageSummary{
+		ID:                   msg.ID,
+		SourceMessageID:      msg.SourceMessageID,
+		ConversationID:       msg.ConversationID,
+		SourceConversationID: msg.SourceConversationID,
+		Subject:              filteredSubject,
+		Snippet:              filteredSnippet,
+		FromEmail:            filteredFromEmail,
+		FromName:             filteredFromName,
+		SentAt:               msg.SentAt,
+		SizeEstimate:         msg.SizeEstimate,
+		HasAttachments:       msg.HasAttachments,
+		AttachmentCount:      msg.AttachmentCount,
+		Labels:               filteredLabels,
+		DeletedAt:            msg.DeletedAt,
+	}
+}
+
+// filterMessageDetail applies PII filtering to a MessageDetail.
+func (h *handlers) filterMessageDetail(ctx context.Context, msg query.MessageDetail) query.MessageDetail {
+	if h.piiFilter == nil {
+		return msg
+	}
+
+	// Filter PII from string fields
+	filteredSubject, _ := h.piiFilter.FilterString(ctx, msg.Subject)
+	filteredSnippet, _ := h.piiFilter.FilterString(ctx, msg.Snippet)
+	filteredBodyText, _ := h.piiFilter.FilterString(ctx, msg.BodyText)
+	filteredBodyHTML, _ := h.piiFilter.FilterString(ctx, msg.BodyHTML)
+
+	// Filter PII from participants
+	filteredFrom := make([]query.Address, len(msg.From))
+	for i, addr := range msg.From {
+		filteredEmail, _ := h.piiFilter.FilterString(ctx, addr.Email)
+		filteredName, _ := h.piiFilter.FilterString(ctx, addr.Name)
+		filteredFrom[i] = query.Address{
+			Email: filteredEmail,
+			Name:  filteredName,
+		}
+	}
+
+	filteredTo := make([]query.Address, len(msg.To))
+	for i, addr := range msg.To {
+		filteredEmail, _ := h.piiFilter.FilterString(ctx, addr.Email)
+		filteredName, _ := h.piiFilter.FilterString(ctx, addr.Name)
+		filteredTo[i] = query.Address{
+			Email: filteredEmail,
+			Name:  filteredName,
+		}
+	}
+
+	filteredCc := make([]query.Address, len(msg.Cc))
+	for i, addr := range msg.Cc {
+		filteredEmail, _ := h.piiFilter.FilterString(ctx, addr.Email)
+		filteredName, _ := h.piiFilter.FilterString(ctx, addr.Name)
+		filteredCc[i] = query.Address{
+			Email: filteredEmail,
+			Name:  filteredName,
+		}
+	}
+
+	filteredBcc := make([]query.Address, len(msg.Bcc))
+	for i, addr := range msg.Bcc {
+		filteredEmail, _ := h.piiFilter.FilterString(ctx, addr.Email)
+		filteredName, _ := h.piiFilter.FilterString(ctx, addr.Name)
+		filteredBcc[i] = query.Address{
+			Email: filteredEmail,
+			Name:  filteredName,
+		}
+	}
+
+	// Filter PII from labels
+	filteredLabels := make([]string, len(msg.Labels))
+	if len(msg.Labels) > 0 {
+		filteredLabels, _ = h.piiFilter.FilterStrings(ctx, msg.Labels)
+	}
+
+	return query.MessageDetail{
+		ID:                   msg.ID,
+		SourceMessageID:      msg.SourceMessageID,
+		ConversationID:       msg.ConversationID,
+		SourceConversationID: msg.SourceConversationID,
+		Subject:              filteredSubject,
+		Snippet:              filteredSnippet,
+		SentAt:               msg.SentAt,
+		ReceivedAt:           msg.ReceivedAt,
+		SizeEstimate:         msg.SizeEstimate,
+		HasAttachments:       msg.HasAttachments,
+		From:                 filteredFrom,
+		To:                   filteredTo,
+		Cc:                   filteredCc,
+		Bcc:                  filteredBcc,
+		BodyText:             filteredBodyText,
+		BodyHTML:             filteredBodyHTML,
+		Labels:               filteredLabels,
+		Attachments:          msg.Attachments, // Attachments don't contain PII (just metadata)
+	}
 }
 
 // getDateArg extracts an optional date (YYYY-MM-DD) from the arguments map.
@@ -141,6 +260,15 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 		}
 	}
 
+	// Filter PII from results before returning
+	if h.piiFilter != nil {
+		filteredResults := make([]query.MessageSummary, len(results))
+		for i, msg := range results {
+			filteredResults[i] = h.filterMessageSummary(ctx, msg)
+		}
+		return jsonResult(filteredResults)
+	}
+
 	return jsonResult(results)
 }
 
@@ -155,6 +283,12 @@ func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mc
 	msg, err := h.engine.GetMessage(ctx, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("message not found: %v", err)), nil
+	}
+
+	// Filter PII from message detail before returning
+	if h.piiFilter != nil {
+		filteredMsg := h.filterMessageDetail(ctx, *msg)
+		return jsonResult(&filteredMsg)
 	}
 
 	return jsonResult(msg)
@@ -346,6 +480,15 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("list failed: %v", err)), nil
 	}
 
+	// Filter PII from results before returning
+	if h.piiFilter != nil {
+		filteredResults := make([]query.MessageSummary, len(results))
+		for i, msg := range results {
+			filteredResults[i] = h.filterMessageSummary(ctx, msg)
+		}
+		return jsonResult(filteredResults)
+	}
+
 	return jsonResult(results)
 }
 
@@ -358,6 +501,22 @@ func (h *handlers) getStats(ctx context.Context, _ mcp.CallToolRequest) (*mcp.Ca
 	accounts, err := h.engine.ListAccounts(ctx)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("accounts failed: %v", err)), nil
+	}
+
+	// Filter PII from account information before returning
+	if h.piiFilter != nil {
+		filteredAccounts := make([]query.AccountInfo, len(accounts))
+		for i, acc := range accounts {
+			filteredIdentifier, _ := h.piiFilter.FilterString(ctx, acc.Identifier)
+			filteredDisplayName, _ := h.piiFilter.FilterString(ctx, acc.DisplayName)
+			filteredAccounts[i] = query.AccountInfo{
+				ID:          acc.ID,
+				SourceType:  acc.SourceType,
+				Identifier:  filteredIdentifier,
+				DisplayName: filteredDisplayName,
+			}
+		}
+		accounts = filteredAccounts
 	}
 
 	resp := struct {

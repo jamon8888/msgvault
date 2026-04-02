@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wesm/msgvault/internal/pii"
 	"github.com/wesm/msgvault/internal/query"
 )
 
@@ -57,13 +59,19 @@ func withAccount() mcp.ToolOption {
 // It blocks until stdin is closed or the context is cancelled.
 // dataDir is the base data directory (e.g., ~/.msgvault) used for deletions.
 func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir string) error {
+	// Initialize PII filter
+	piiFilter, err := pii.NewFilter()
+	if err != nil {
+		return fmt.Errorf("failed to initialize PII filter: %w", err)
+	}
+
 	s := server.NewMCPServer(
 		"msgvault",
 		"1.0.0",
 		server.WithToolCapabilities(false),
 	)
 
-	h := &handlers{engine: engine, attachmentsDir: attachmentsDir, dataDir: dataDir}
+	h := &handlers{engine: engine, attachmentsDir: attachmentsDir, dataDir: dataDir, piiFilter: piiFilter}
 
 	s.AddTool(searchMessagesTool(), h.searchMessages)
 	s.AddTool(getMessageTool(), h.getMessage)
