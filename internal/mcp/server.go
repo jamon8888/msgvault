@@ -86,6 +86,7 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 	// Initialize embedding service and search store
 	var embeddingSvc embedding.Service
 	var searchStore search.SearchStore
+	var vectorSvc vector.VectorStore
 
 	if cfg != nil && cfg.Embedding.Provider == "ollama" {
 		// Use Ollama + DuckDB VSS
@@ -93,9 +94,10 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 		embeddingSvc = embedding.NewEmbeddingService(ollamaClient, cfg.Embedding.Model)
 
 		vectorDSN := "vector.duckdb"
-		vectorSvc, err := vector.NewDuckDBStore(vectorDSN)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to initialize vector store: %v\n", err)
+		var err2 error
+		vectorSvc, err2 = vector.NewDuckDBStore(vectorDSN)
+		if err2 != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to initialize vector store: %v\n", err2)
 			vectorSvc = nil
 		}
 		if vectorSvc != nil {
@@ -105,13 +107,16 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 
 	// Default: BM25 (requires SQLite DB - not available via Engine interface)
 	// BM25 will be initialized when the DB is passed directly (future enhancement)
+	var bm25DB *sql.DB
 	if searchStore == nil && cfg != nil && cfg.Data.DatabaseURL != "" {
-		db, err := sql.Open("sqlite3", cfg.Data.DatabaseURL)
+		bm25DB, err = sql.Open("sqlite3", cfg.Data.DatabaseURL)
 		if err == nil {
-			searchStore, err = search.NewBM25Store(db)
+			searchStore, err = search.NewBM25Store(bm25DB)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Failed to initialize BM25 store: %v\n", err)
 				searchStore = nil
+				bm25DB.Close()
+				bm25DB = nil
 			}
 		}
 	}
@@ -139,8 +144,11 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 
 	stdio := server.NewStdioServer(s)
 
-	if searchStore != nil {
-		defer searchStore.Close()
+	if vectorSvc != nil {
+		defer vectorSvc.Close()
+	}
+	if bm25DB != nil {
+		defer bm25DB.Close()
 	}
 
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)

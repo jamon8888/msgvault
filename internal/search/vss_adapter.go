@@ -54,6 +54,10 @@ func (a *VectorSearchAdapter) GetChunksByAttachmentID(attachmentID int64) ([]str
 }
 
 func (a *VectorSearchAdapter) Delete(ctx context.Context, attachmentID int64) error {
+	// VSS doesn't support direct delete by attachmentID.
+	// Deletion would require SQL on the underlying DuckDB tables.
+	_ = ctx
+	_ = attachmentID
 	return nil
 }
 
