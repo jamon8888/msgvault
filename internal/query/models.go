@@ -79,6 +79,15 @@ type AttachmentInfo struct {
 	ContentHash string
 }
 
+// AttachmentFilter filters which attachments to return.
+type AttachmentFilter struct {
+	SourceID     int64
+	WithTextOnly bool // Only attachments not yet indexed
+	Formats      []string
+	Limit        int
+	Offset       int
+}
+
 // ViewType represents the type of aggregate view.
 type ViewType int
 

@@ -14,15 +14,15 @@ import (
 )
 
 var (
-	smtpPort    int
-	smtpHost   string
-	storageType string
-	wormEnabled bool
+	smtpPort      int
+	smtpHost      string
+	storageType   string
+	wormEnabled   bool
 	minioEndpoint string
 	minioBucket   string
 	minioDataPath string
-	s3Endpoint   string
-	s3Bucket     string
+	s3Endpoint    string
+	s3Bucket      string
 )
 
 var serveArchiveCmd = &cobra.Command{
@@ -47,12 +47,12 @@ func init() {
 	serveArchiveCmd.Flags().StringVar(&smtpHost, "smtp-host", "", "SMTP hostname (required)")
 	serveArchiveCmd.Flags().StringVar(&storageType, "storage", "minio", "Storage type: s3, minio")
 	serveArchiveCmd.Flags().BoolVar(&wormEnabled, "worm", false, "Enable WORM (immutable storage)")
-	
+
 	// MinIO options
 	serveArchiveCmd.Flags().StringVar(&minioEndpoint, "minio-endpoint", "localhost:9000", "MinIO endpoint")
 	serveArchiveCmd.Flags().StringVar(&minioBucket, "minio-bucket", "archives", "MinIO bucket")
 	serveArchiveCmd.Flags().StringVar(&minioDataPath, "minio-data-path", "/data/archives", "MinIO data path (on-premise)")
-	
+
 	// S3 options
 	serveArchiveCmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "S3 endpoint (for cloud)")
 	serveArchiveCmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket (for cloud)")
@@ -91,10 +91,10 @@ func runServeArchive(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("s3-endpoint and s3-bucket required for s3 storage")
 		}
 		store, err = storage.NewS3Adapter(&storage.S3Config{
-			Endpoint:    s3Endpoint,
-			Bucket:      s3Bucket,
-			ObjectLock:  wormEnabled,
-			UseSSL:      true,
+			Endpoint:   s3Endpoint,
+			Bucket:     s3Bucket,
+			ObjectLock: wormEnabled,
+			UseSSL:     true,
 		})
 	default:
 		return fmt.Errorf("unsupported storage type: %s", storageType)

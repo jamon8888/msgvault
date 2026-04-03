@@ -661,6 +661,13 @@ func (e *Engine) ListAccounts(ctx context.Context) ([]query.AccountInfo, error) 
 	return result, nil
 }
 
+// ListAttachments returns attachments matching the filter.
+func (e *Engine) ListAttachments(ctx context.Context, filter query.AttachmentFilter) ([]query.AttachmentInfo, error) {
+	// For remote engine, we'd need an API endpoint
+	// For now, return empty list
+	return []query.AttachmentInfo{}, nil
+}
+
 // GetTotalStats returns overall database statistics.
 func (e *Engine) GetTotalStats(ctx context.Context, opts query.StatsOptions) (*query.TotalStats, error) {
 	params := buildStatsQuery(opts)

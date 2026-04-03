@@ -133,6 +133,17 @@ func (m *MockEngine) ListAccounts(_ context.Context) ([]query.AccountInfo, error
 	return m.Accounts, nil
 }
 
+func (m *MockEngine) ListAttachments(_ context.Context, filter query.AttachmentFilter) ([]query.AttachmentInfo, error) {
+	if m.Attachments != nil {
+		var result []query.AttachmentInfo
+		for _, att := range m.Attachments {
+			result = append(result, *att)
+		}
+		return result, nil
+	}
+	return nil, nil
+}
+
 func (m *MockEngine) GetTotalStats(ctx context.Context, opts query.StatsOptions) (*query.TotalStats, error) {
 	if m.GetTotalStatsFunc != nil {
 		return m.GetTotalStatsFunc(ctx, opts)

@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/marcboeker/go-duckdb/v2"
+	_ "github.com/marcboeker/go-duckdb"
 	"github.com/wesm/msgvault/internal/search"
 )
 
@@ -1199,6 +1199,15 @@ func (e *DuckDBEngine) GetAttachment(ctx context.Context, id int64) (*Attachment
 		return e.sqliteEngine.GetAttachment(ctx, id)
 	}
 	return nil, fmt.Errorf("GetAttachment requires SQLite: pass sqliteDB to NewDuckDBEngine")
+}
+
+// ListAttachments returns attachments matching the filter.
+// Attachments live in SQLite, so delegate to the SQLite engine.
+func (e *DuckDBEngine) ListAttachments(ctx context.Context, filter AttachmentFilter) ([]AttachmentInfo, error) {
+	if e.sqliteEngine != nil {
+		return e.sqliteEngine.ListAttachments(ctx, filter)
+	}
+	return nil, fmt.Errorf("ListAttachments requires SQLite: pass sqliteDB to NewDuckDBEngine")
 }
 
 func (e *DuckDBEngine) getMessageByQuery(ctx context.Context, whereClause string, args ...interface{}) (*MessageDetail, error) {

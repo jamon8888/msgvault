@@ -58,12 +58,17 @@ type Engine interface {
 	// Account queries
 	ListAccounts(ctx context.Context) ([]AccountInfo, error)
 
-	// Stats
+	// Attachment queries
+	ListAttachments(ctx context.Context, filter AttachmentFilter) ([]AttachmentInfo, error)
+
+	// Statistics
 	GetTotalStats(ctx context.Context, opts StatsOptions) (*TotalStats, error)
 
-	// Close releases any resources held by the engine.
+	// Close releases resources.
 	Close() error
 }
+
+// AttachmentFilter filters which attachments to return.
 
 // SearchFastResult holds the combined results of a fast search:
 // paginated messages, total count, and aggregate stats — all from a single
