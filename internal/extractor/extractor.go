@@ -16,6 +16,20 @@ type Extractor interface {
 	ExtractText(path string) (string, error)
 }
 
+type Service interface {
+	Extract(format, path string) (string, error)
+}
+
+type ExtractorService struct{}
+
+func (s *ExtractorService) Extract(format, path string) (string, error) {
+	extractor, err := NewExtractor(format)
+	if err != nil {
+		return "", err
+	}
+	return extractor.ExtractText(path)
+}
+
 func NewExtractor(format string) (Extractor, error) {
 	switch format {
 	case "pdf":

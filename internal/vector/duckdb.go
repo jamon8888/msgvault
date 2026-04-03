@@ -1,3 +1,6 @@
+//go:build !windows
+// +build !windows
+
 package vector
 
 import (
@@ -10,6 +13,7 @@ import (
 type VectorStore interface {
 	InitSchema() error
 	InsertVector(id int64, messageID int64, attachmentID int64, chunkIndex int, embedding []float64) error
+	InsertText(id int64, messageID int64, attachmentID int64, chunkIndex int, chunkText string) error
 	Search(query []float64, limit int) ([]SearchResult, error)
 	Close() error
 }
@@ -78,6 +82,14 @@ func (s *DuckDBStore) InsertVector(id int64, messageID int64, attachmentID int64
 		INSERT INTO attachment_vectors (id, message_id, attachment_id, chunk_index, embedding)
 		VALUES (?, ?, ?, ?, ?)
 	`, id, messageID, attachmentID, chunkIndex, embedding)
+	return err
+}
+
+func (s *DuckDBStore) InsertText(id int64, messageID int64, attachmentID int64, chunkIndex int, chunkText string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO attachment_text (id, message_id, attachment_id, chunk_index, chunk_text)
+		VALUES (?, ?, ?, ?, ?)
+	`, id, messageID, attachmentID, chunkIndex, chunkText)
 	return err
 }
 

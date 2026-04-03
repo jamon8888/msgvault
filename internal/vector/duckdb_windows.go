@@ -7,6 +7,13 @@ import "errors"
 
 var errVectorStoreNotAvailable = errors.New("vector store not available on Windows (requires native DuckDB)")
 
+type VectorStore interface {
+	InitSchema() error
+	InsertVector(id int64, messageID int64, attachmentID int64, chunkIndex int, embedding []float64) error
+	Search(query []float64, limit int) ([]SearchResult, error)
+	Close() error
+}
+
 type SearchResult struct {
 	ID           int64
 	MessageID    int64
@@ -27,6 +34,10 @@ func (s *WindowsDuckDBStore) InitSchema() error {
 }
 
 func (s *WindowsDuckDBStore) InsertVector(id int64, messageID int64, attachmentID int64, chunkIndex int, embedding []float64) error {
+	return errVectorStoreNotAvailable
+}
+
+func (s *WindowsDuckDBStore) InsertText(id int64, messageID int64, attachmentID int64, chunkIndex int, chunkText string) error {
 	return errVectorStoreNotAvailable
 }
 

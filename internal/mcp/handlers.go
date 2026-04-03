@@ -15,10 +15,13 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/wesm/msgvault/internal/deletion"
+	"github.com/wesm/msgvault/internal/embedding"
 	"github.com/wesm/msgvault/internal/export"
+	"github.com/wesm/msgvault/internal/extractor"
 	pii "github.com/wesm/msgvault/internal/pii"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/vector"
 )
 
 const maxLimit = 1000
@@ -28,6 +31,9 @@ type handlers struct {
 	attachmentsDir string
 	dataDir        string
 	piiFilter      *pii.Filter
+	extractor      extractor.Service
+	embedding      embedding.Service
+	vectorStore    vector.VectorStore
 }
 
 // getAccountID looks up a source ID by email address.
@@ -772,4 +778,181 @@ func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	return jsonResult(resp)
+}
+
+func (h *handlers) searchAttachments(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.vectorStore == nil || h.embedding == nil {
+		return mcp.NewToolResultError("vector search not configured. Enable extraction and embedding in config.toml."), nil
+	}
+
+	args := req.GetArguments()
+
+	queryStr, _ := args["query"].(string)
+	if queryStr == "" {
+		return mcp.NewToolResultError("query parameter is required"), nil
+	}
+
+	limit := limitArg(args, "limit", 10)
+
+	// Generate embedding for query
+	embedding, err := h.embedding.Embed(queryStr)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("embedding failed: %v", err)), nil
+	}
+
+	// Search vector store
+	results, err := h.vectorStore.Search(embedding, limit)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+	}
+
+	if len(results) == 0 {
+		return mcp.NewToolResultText("[]"), nil
+	}
+
+	// Convert to response format
+	type Result struct {
+		AttachmentID int64   `json:"attachment_id"`
+		MessageID    int64   `json:"message_id"`
+		ChunkText    string  `json:"chunk_text"`
+		Distance     float64 `json:"distance"`
+	}
+
+	resp := make([]Result, len(results))
+	for i, r := range results {
+		resp[i] = Result{
+			AttachmentID: r.AttachmentID,
+			MessageID:    r.MessageID,
+			ChunkText:    r.ChunkText,
+			Distance:     r.Distance,
+		}
+	}
+
+	return jsonResult(resp)
+}
+
+func (h *handlers) extractAttachment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.extractor == nil || h.embedding == nil || h.vectorStore == nil {
+		return mcp.NewToolResultError("extraction not configured. Enable extraction and embedding in config.toml."), nil
+	}
+
+	args := req.GetArguments()
+
+	id, err := getIDArg(args, "attachment_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	att, err := h.engine.GetAttachment(ctx, id)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("get attachment failed: %v", err)), nil
+	}
+	if att == nil {
+		return mcp.NewToolResultError("attachment not found"), nil
+	}
+
+	// Determine format from mime type
+	format := mimeTypeToFormat(att.MimeType)
+	if format == "" {
+		return mcp.NewToolResultError(fmt.Sprintf("unsupported mime type: %s", att.MimeType)), nil
+	}
+
+	// Read attachment file
+	data, err := h.readAttachmentFile(att.ContentHash)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Write to temp file for extractor
+	tmpFile, err := os.CreateTemp("", "att-*."+format)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("create temp file: %v", err)), nil
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return mcp.NewToolResultError(fmt.Sprintf("write temp file: %v", err)), nil
+	}
+	tmpFile.Close()
+
+	// Extract text
+	text, err := h.extractor.Extract(format, tmpPath)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("extraction failed: %v", err)), nil
+	}
+
+	// Chunk text
+	chunks := extractor.ChunkText(text, 1000, 200)
+	if len(chunks) == 0 {
+		return mcp.NewToolResultError("no text extracted"), nil
+	}
+
+	// Ensure vector store schema is initialized
+	if err := h.vectorStore.InitSchema(); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("init vector schema: %v", err)), nil
+	}
+
+	// Generate embeddings and store
+	var insertedChunks int
+	for i, chunk := range chunks {
+		embedding, err := h.embedding.Embed(chunk)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("embedding failed: %v", err)), nil
+		}
+
+		if err := h.vectorStore.InsertVector(
+			int64(i),
+			0, // message_id not readily available without extra query
+			att.ID,
+			i,
+			embedding,
+		); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("store vector: %v", err)), nil
+		}
+
+		if err := h.vectorStore.InsertText(
+			int64(i),
+			0,
+			att.ID,
+			i,
+			chunk,
+		); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("store text: %v", err)), nil
+		}
+
+		insertedChunks++
+	}
+
+	resp := struct {
+		AttachmentID  int64  `json:"attachment_id"`
+		Filename      string `json:"filename"`
+		Format        string `json:"format"`
+		TextLength    int    `json:"text_length"`
+		Chunks        int    `json:"chunks"`
+		InsertedCount int    `json:"inserted_count"`
+	}{
+		AttachmentID:  att.ID,
+		Filename:      att.Filename,
+		Format:        format,
+		TextLength:    len(text),
+		Chunks:        len(chunks),
+		InsertedCount: insertedChunks,
+	}
+
+	return jsonResult(resp)
+}
+
+func mimeTypeToFormat(mimeType string) string {
+	switch {
+	case strings.HasPrefix(mimeType, "application/pdf"):
+		return "pdf"
+	case strings.HasPrefix(mimeType, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
+		return "docx"
+	case strings.HasPrefix(mimeType, "text/"):
+		return "txt"
+	default:
+		return ""
+	}
 }

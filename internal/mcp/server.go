@@ -7,20 +7,25 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wesm/msgvault/internal/embedding"
+	"github.com/wesm/msgvault/internal/extractor"
 	"github.com/wesm/msgvault/internal/pii"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/vector"
 )
 
 // Tool name constants.
 const (
-	ToolSearchMessages   = "search_messages"
-	ToolGetMessage       = "get_message"
-	ToolGetAttachment    = "get_attachment"
-	ToolExportAttachment = "export_attachment"
-	ToolListMessages     = "list_messages"
-	ToolGetStats         = "get_stats"
-	ToolAggregate        = "aggregate"
-	ToolStageDeletion    = "stage_deletion"
+	ToolSearchMessages    = "search_messages"
+	ToolGetMessage        = "get_message"
+	ToolGetAttachment     = "get_attachment"
+	ToolExportAttachment  = "export_attachment"
+	ToolListMessages      = "list_messages"
+	ToolGetStats          = "get_stats"
+	ToolAggregate         = "aggregate"
+	ToolStageDeletion     = "stage_deletion"
+	ToolSearchAttachments = "search_attachments"
+	ToolExtractAttachment = "extract_attachment"
 )
 
 // Common argument helpers for recurring tool option definitions.
@@ -71,7 +76,22 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 		server.WithToolCapabilities(false),
 	)
 
-	h := &handlers{engine: engine, attachmentsDir: attachmentsDir, dataDir: dataDir, piiFilter: piiFilter}
+	// Initialize extractor service
+	extractorSvc := &extractor.ExtractorService{}
+
+	// Initialize embedding service (nil if not configured)
+	var embeddingSvc embedding.Service
+	var vectorSvc vector.VectorStore
+
+	h := &handlers{
+		engine:         engine,
+		attachmentsDir: attachmentsDir,
+		dataDir:        dataDir,
+		piiFilter:      piiFilter,
+		extractor:      extractorSvc,
+		embedding:      embeddingSvc,
+		vectorStore:    vectorSvc,
+	}
 
 	s.AddTool(searchMessagesTool(), h.searchMessages)
 	s.AddTool(getMessageTool(), h.getMessage)
@@ -81,6 +101,8 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 	s.AddTool(getStatsTool(), h.getStats)
 	s.AddTool(aggregateTool(), h.aggregate)
 	s.AddTool(stageDeletionTool(), h.stageDeletion)
+	s.AddTool(searchAttachmentsTool(), h.searchAttachments)
+	s.AddTool(extractAttachmentTool(), h.extractAttachment)
 
 	stdio := server.NewStdioServer(s)
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
@@ -202,6 +224,34 @@ func stageDeletionTool() mcp.Tool {
 		withBefore(),
 		mcp.WithBoolean("has_attachment",
 			mcp.Description("Only messages with attachments"),
+		),
+	)
+}
+
+func searchAttachmentsTool() mcp.Tool {
+	return mcp.NewTool(ToolSearchAttachments,
+		mcp.WithDescription("Search attachment content using semantic vector search. Finds documents similar to your query based on meaning, not just keywords."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("query",
+			mcp.Required(),
+			mcp.Description("Semantic search query (e.g. 'find contracts about payment terms')"),
+		),
+		withLimit("10"),
+		mcp.WithString("attachment_types",
+			mcp.Description("Filter by attachment types: pdf, docx, txt (comma-separated)"),
+		),
+	)
+}
+
+func extractAttachmentTool() mcp.Tool {
+	return mcp.NewTool(ToolExtractAttachment,
+		mcp.WithDescription("Extract and index text content from a specific attachment for semantic search."),
+		mcp.WithNumber("attachment_id",
+			mcp.Required(),
+			mcp.Description("Attachment ID to extract"),
+		),
+		mcp.WithBoolean("force",
+			mcp.Description("Force re-extraction even if already extracted"),
 		),
 	)
 }
