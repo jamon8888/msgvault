@@ -274,14 +274,10 @@ func (c *Client) enumerateMailbox(
 	criteria := &imap.SearchCriteria{}
 	if c.afterDate != "" || c.beforeDate != "" {
 		if c.afterDate != "" {
-			criteria.Sinces = []imap.SearchDate{{
-				Date: parseIMAPDate(c.afterDate),
-			}}
+			criteria.Since = parseIMAPDate(c.afterDate)
 		}
 		if c.beforeDate != "" {
-			criteria.Befores = []imap.SearchDate{{
-				Date: parseIMAPDate(c.beforeDate),
-			}}
+			criteria.Before = parseIMAPDate(c.beforeDate)
 		}
 		c.logger.Debug("using date-filtered IMAP search",
 			"after", c.afterDate, "before", c.beforeDate)
