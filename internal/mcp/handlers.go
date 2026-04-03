@@ -26,6 +26,12 @@ import (
 
 const maxLimit = 1000
 
+type VectorMatch struct {
+	AttachmentID int64   `json:"attachment_id"`
+	ChunkText    string  `json:"chunk_text"`
+	Distance     float64 `json:"distance"`
+}
+
 type handlers struct {
 	engine         query.Engine
 	attachmentsDir string
@@ -273,35 +279,32 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 		if err == nil && len(embedding) > 0 {
 			vectorResults, err := h.vectorStore.Search(embedding, limit)
 			if err == nil && len(vectorResults) > 0 {
-				// Build attachment ID set for quick lookup
-				attIDs := make(map[int64]bool)
-				for _, vr := range vectorResults {
-					attIDs[vr.AttachmentID] = true
+				// Add vector search results to response
+				type SearchResultWithVectors struct {
+					Messages          []query.MessageSummary `json:"messages"`
+					AttachmentMatches []VectorMatch          `json:"attachment_matches,omitempty"`
 				}
-
-				// Fetch attachment info for matching IDs
-				for i := range results {
-					if results[i].HasAttachments && results[i].ID > 0 {
-						// Could fetch attachments here but we'd need a method on engine
-						// For now, mark that there are matching attachments
+				matches := make([]VectorMatch, len(vectorResults))
+				for i, vr := range vectorResults {
+					matches[i] = VectorMatch{
+						AttachmentID: vr.AttachmentID,
+						ChunkText:    vr.ChunkText,
+						Distance:     vr.Distance,
 					}
 				}
-
-				// Add vector search metadata to response
-				type VectorMeta struct {
-					AttachmentMatches int     `json:"attachment_matches"`
-					TopMatchDistance  float64 `json:"top_match_distance"`
-				}
-				meta := VectorMeta{
-					AttachmentMatches: len(vectorResults),
-				}
-				if len(vectorResults) > 0 {
-					meta.TopMatchDistance = vectorResults[0].Distance
+				resp := SearchResultWithVectors{
+					Messages:          results,
+					AttachmentMatches: matches,
 				}
 
-				// TODO: Merge vector results with message results
-				_ = attIDs
-				_ = meta
+				if h.piiFilter != nil {
+					filteredResults := make([]query.MessageSummary, len(results))
+					for i, msg := range results {
+						filteredResults[i] = h.filterMessageSummary(ctx, msg)
+					}
+					resp.Messages = filteredResults
+				}
+				return jsonResult(resp)
 			}
 		}
 	}
