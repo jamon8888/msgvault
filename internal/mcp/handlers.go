@@ -283,9 +283,14 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 		if err == nil && len(searchResults) > 0 {
 			matches := make([]AttachmentMatch, len(searchResults))
 			for i, sr := range searchResults {
+				chunkText := sr.ChunkText
+				if h.piiFilter != nil {
+					filtered, _ := h.piiFilter.FilterString(ctx, chunkText)
+					chunkText = filtered
+				}
 				matches[i] = AttachmentMatch{
 					AttachmentID: sr.AttachmentID,
-					ChunkText:    sr.ChunkText,
+					ChunkText:    chunkText,
 					Distance:     sr.Score,
 				}
 			}
@@ -336,19 +341,18 @@ func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mc
 		for _, att := range msg.Attachments {
 			texts, err := h.searchStore.GetChunksByAttachmentID(att.ID)
 			if err == nil && len(texts) > 0 {
-				extractedTexts = append(extractedTexts, texts...)
+				if h.piiFilter != nil {
+					filtered, _ := h.piiFilter.FilterStrings(ctx, texts)
+					extractedTexts = append(extractedTexts, filtered...)
+				} else {
+					extractedTexts = append(extractedTexts, texts...)
+				}
 			}
 		}
 		if len(extractedTexts) > 0 {
-			// Add extracted text to the message response
-			// This is added as a special field that clients can use
 			type MessageWithExtractedAttachments struct {
 				*query.MessageDetail
 				ExtractedAttachmentText []string `json:"extracted_attachment_text,omitempty"`
-			}
-			resp := MessageWithExtractedAttachments{
-				MessageDetail:           msg,
-				ExtractedAttachmentText: extractedTexts,
 			}
 			if h.piiFilter != nil {
 				filteredMsg := h.filterMessageDetail(ctx, *msg)
@@ -357,6 +361,10 @@ func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mc
 					ExtractedAttachmentText: extractedTexts,
 				}
 				return jsonResult(&filteredResp)
+			}
+			resp := MessageWithExtractedAttachments{
+				MessageDetail:           msg,
+				ExtractedAttachmentText: extractedTexts,
 			}
 			return jsonResult(&resp)
 		}
@@ -883,10 +891,15 @@ func (h *handlers) searchAttachments(ctx context.Context, req mcp.CallToolReques
 
 	resp := make([]Result, len(results))
 	for i, r := range results {
+		chunkText := r.ChunkText
+		if h.piiFilter != nil {
+			filtered, _ := h.piiFilter.FilterString(ctx, chunkText)
+			chunkText = filtered
+		}
 		resp[i] = Result{
 			AttachmentID: r.AttachmentID,
 			MessageID:    r.MessageID,
-			ChunkText:    r.ChunkText,
+			ChunkText:    chunkText,
 			Distance:     r.Score,
 		}
 	}
@@ -959,6 +972,13 @@ func (h *handlers) extractAttachment(ctx context.Context, req mcp.CallToolReques
 			return mcp.NewToolResultError(fmt.Sprintf("index chunk: %v", err)), nil
 		}
 		insertedChunks++
+	}
+
+	// Flush BM25 index so new chunks are immediately searchable
+	if flusher, ok := h.searchStore.(interface{ Flush() error }); ok {
+		if err := flusher.Flush(); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("flush index: %v", err)), nil
+		}
 	}
 
 	resp := struct {

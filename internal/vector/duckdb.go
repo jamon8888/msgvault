@@ -46,13 +46,18 @@ func (s *DuckDBStore) InitSchema() error {
 		return fmt.Errorf("failed to load vss: %w", err)
 	}
 
+	_, err = s.db.Exec("SET hnsw_enable_experimental_persistence = true;")
+	if err != nil {
+		return fmt.Errorf("failed to enable hnsw persistence: %w", err)
+	}
+
 	_, err = s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS attachment_vectors (
 			id BIGINT,
 			message_id BIGINT,
 			attachment_id BIGINT,
 			chunk_index INTEGER,
-			embedding FLOAT[]
+			embedding FLOAT[768]
 		);
 	`)
 	if err != nil {
