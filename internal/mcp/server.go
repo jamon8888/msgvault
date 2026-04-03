@@ -2,16 +2,19 @@ package mcp
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/embedding"
 	"github.com/wesm/msgvault/internal/extractor"
 	"github.com/wesm/msgvault/internal/pii"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/vector"
 )
 
@@ -80,20 +83,35 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 	// Initialize extractor service
 	extractorSvc := &extractor.ExtractorService{}
 
-	// Initialize embedding service and vector store if enabled in config
+	// Initialize embedding service and search store
 	var embeddingSvc embedding.Service
-	var vectorSvc vector.VectorStore
+	var searchStore search.SearchStore
 
-	if cfg != nil && cfg.Embedding.Enabled {
+	if cfg != nil && cfg.Embedding.Provider == "ollama" {
+		// Use Ollama + DuckDB VSS
 		ollamaClient := embedding.NewOllamaClient(cfg.Embedding.OllamaURL)
 		embeddingSvc = embedding.NewEmbeddingService(ollamaClient, cfg.Embedding.Model)
 
-		if cfg.Vector.Store == "duckdb" {
-			vectorDSN := "vector.duckdb"
-			vectorSvc, err = vector.NewDuckDBStore(vectorDSN)
+		vectorDSN := "vector.duckdb"
+		vectorSvc, err := vector.NewDuckDBStore(vectorDSN)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to initialize vector store: %v\n", err)
+			vectorSvc = nil
+		}
+		if vectorSvc != nil {
+			searchStore = search.NewVectorSearchAdapter(vectorSvc, embeddingSvc)
+		}
+	}
+
+	// Default: BM25 (requires SQLite DB - not available via Engine interface)
+	// BM25 will be initialized when the DB is passed directly (future enhancement)
+	if searchStore == nil && cfg != nil && cfg.Data.DatabaseURL != "" {
+		db, err := sql.Open("sqlite3", cfg.Data.DatabaseURL)
+		if err == nil {
+			searchStore, err = search.NewBM25Store(db)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Failed to initialize vector store: %v\n", err)
-				vectorSvc = nil
+				fmt.Fprintf(os.Stderr, "Warning: Failed to initialize BM25 store: %v\n", err)
+				searchStore = nil
 			}
 		}
 	}
@@ -105,7 +123,7 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 		piiFilter:      piiFilter,
 		extractor:      extractorSvc,
 		embedding:      embeddingSvc,
-		vectorStore:    vectorSvc,
+		searchStore:    searchStore,
 	}
 
 	s.AddTool(searchMessagesTool(), h.searchMessages)
@@ -121,8 +139,8 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 
 	stdio := server.NewStdioServer(s)
 
-	if vectorSvc != nil {
-		defer vectorSvc.Close()
+	if searchStore != nil {
+		defer searchStore.Close()
 	}
 
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)

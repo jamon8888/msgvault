@@ -21,12 +21,11 @@ import (
 	pii "github.com/wesm/msgvault/internal/pii"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
-	"github.com/wesm/msgvault/internal/vector"
 )
 
 const maxLimit = 1000
 
-type VectorMatch struct {
+type AttachmentMatch struct {
 	AttachmentID int64   `json:"attachment_id"`
 	ChunkText    string  `json:"chunk_text"`
 	Distance     float64 `json:"distance"`
@@ -39,7 +38,12 @@ type handlers struct {
 	piiFilter      *pii.Filter
 	extractor      extractor.Service
 	embedding      embedding.Service
-	vectorStore    vector.VectorStore
+	searchStore    search.SearchStore
+}
+
+type SearchResultWithVectors struct {
+	Messages          []query.MessageSummary `json:"messages"`
+	AttachmentMatches []AttachmentMatch      `json:"attachment_matches,omitempty"`
 }
 
 // getAccountID looks up a source ID by email address.
@@ -273,39 +277,31 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 		}
 	}
 
-	// If include_attachments and vector store is available, perform semantic search
-	if includeAttachments && h.vectorStore != nil && h.embedding != nil && queryStr != "" {
-		embedding, err := h.embedding.Embed(queryStr)
-		if err == nil && len(embedding) > 0 {
-			vectorResults, err := h.vectorStore.Search(embedding, limit)
-			if err == nil && len(vectorResults) > 0 {
-				// Add vector search results to response
-				type SearchResultWithVectors struct {
-					Messages          []query.MessageSummary `json:"messages"`
-					AttachmentMatches []VectorMatch          `json:"attachment_matches,omitempty"`
+	// If include_attachments and search store is available, perform search
+	if includeAttachments && h.searchStore != nil && queryStr != "" {
+		searchResults, err := h.searchStore.Search(ctx, queryStr, limit)
+		if err == nil && len(searchResults) > 0 {
+			matches := make([]AttachmentMatch, len(searchResults))
+			for i, sr := range searchResults {
+				matches[i] = AttachmentMatch{
+					AttachmentID: sr.AttachmentID,
+					ChunkText:    sr.ChunkText,
+					Distance:     sr.Score,
 				}
-				matches := make([]VectorMatch, len(vectorResults))
-				for i, vr := range vectorResults {
-					matches[i] = VectorMatch{
-						AttachmentID: vr.AttachmentID,
-						ChunkText:    vr.ChunkText,
-						Distance:     vr.Distance,
-					}
-				}
-				resp := SearchResultWithVectors{
-					Messages:          results,
-					AttachmentMatches: matches,
-				}
-
-				if h.piiFilter != nil {
-					filteredResults := make([]query.MessageSummary, len(results))
-					for i, msg := range results {
-						filteredResults[i] = h.filterMessageSummary(ctx, msg)
-					}
-					resp.Messages = filteredResults
-				}
-				return jsonResult(resp)
 			}
+			resp := SearchResultWithVectors{
+				Messages:          results,
+				AttachmentMatches: matches,
+			}
+
+			if h.piiFilter != nil {
+				filteredResults := make([]query.MessageSummary, len(results))
+				for i, msg := range results {
+					filteredResults[i] = h.filterMessageSummary(ctx, msg)
+				}
+				resp.Messages = filteredResults
+			}
+			return jsonResult(resp)
 		}
 	}
 
@@ -334,11 +330,11 @@ func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mc
 		return mcp.NewToolResultError(fmt.Sprintf("message not found: %v", err)), nil
 	}
 
-	// If vector store is available, fetch extracted attachment text
-	if h.vectorStore != nil && msg.HasAttachments && len(msg.Attachments) > 0 {
+	// If search store is available, fetch extracted attachment text
+	if h.searchStore != nil && msg.HasAttachments && len(msg.Attachments) > 0 {
 		var extractedTexts []string
 		for _, att := range msg.Attachments {
-			texts, err := h.vectorStore.GetTextByAttachmentID(att.ID)
+			texts, err := h.searchStore.GetChunksByAttachmentID(att.ID)
 			if err == nil && len(texts) > 0 {
 				extractedTexts = append(extractedTexts, texts...)
 			}
@@ -856,8 +852,8 @@ func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (
 }
 
 func (h *handlers) searchAttachments(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if h.vectorStore == nil || h.embedding == nil {
-		return mcp.NewToolResultError("vector search not configured. Enable extraction and embedding in config.toml."), nil
+	if h.searchStore == nil {
+		return mcp.NewToolResultError("search not configured. Enable extraction in config.toml."), nil
 	}
 
 	args := req.GetArguments()
@@ -869,14 +865,7 @@ func (h *handlers) searchAttachments(ctx context.Context, req mcp.CallToolReques
 
 	limit := limitArg(args, "limit", 10)
 
-	// Generate embedding for query
-	embedding, err := h.embedding.Embed(queryStr)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("embedding failed: %v", err)), nil
-	}
-
-	// Search vector store
-	results, err := h.vectorStore.Search(embedding, limit)
+	results, err := h.searchStore.Search(ctx, queryStr, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
@@ -885,7 +874,6 @@ func (h *handlers) searchAttachments(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultText("[]"), nil
 	}
 
-	// Convert to response format
 	type Result struct {
 		AttachmentID int64   `json:"attachment_id"`
 		MessageID    int64   `json:"message_id"`
@@ -899,7 +887,7 @@ func (h *handlers) searchAttachments(ctx context.Context, req mcp.CallToolReques
 			AttachmentID: r.AttachmentID,
 			MessageID:    r.MessageID,
 			ChunkText:    r.ChunkText,
-			Distance:     r.Distance,
+			Distance:     r.Score,
 		}
 	}
 
@@ -907,8 +895,8 @@ func (h *handlers) searchAttachments(ctx context.Context, req mcp.CallToolReques
 }
 
 func (h *handlers) extractAttachment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if h.extractor == nil || h.embedding == nil || h.vectorStore == nil {
-		return mcp.NewToolResultError("extraction not configured. Enable extraction and embedding in config.toml."), nil
+	if h.extractor == nil || h.searchStore == nil {
+		return mcp.NewToolResultError("extraction not configured. Enable extraction in config.toml."), nil
 	}
 
 	args := req.GetArguments()
@@ -964,39 +952,12 @@ func (h *handlers) extractAttachment(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError("no text extracted"), nil
 	}
 
-	// Ensure vector store schema is initialized
-	if err := h.vectorStore.InitSchema(); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("init vector schema: %v", err)), nil
-	}
-
-	// Generate embeddings and store
+	// Index chunks via search store
 	var insertedChunks int
 	for i, chunk := range chunks {
-		embedding, err := h.embedding.Embed(chunk)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("embedding failed: %v", err)), nil
+		if err := h.searchStore.Index(ctx, int64(i), 0, att.ID, i, chunk); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("index chunk: %v", err)), nil
 		}
-
-		if err := h.vectorStore.InsertVector(
-			int64(i),
-			0, // message_id not readily available without extra query
-			att.ID,
-			i,
-			embedding,
-		); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("store vector: %v", err)), nil
-		}
-
-		if err := h.vectorStore.InsertText(
-			int64(i),
-			0,
-			att.ID,
-			i,
-			chunk,
-		); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("store text: %v", err)), nil
-		}
-
 		insertedChunks++
 	}
 
