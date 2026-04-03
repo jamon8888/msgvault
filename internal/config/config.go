@@ -171,6 +171,7 @@ type ExtractionConfig struct {
 // EmbeddingConfig holds configuration for text embedding generation.
 type EmbeddingConfig struct {
 	Enabled    bool   `toml:"enabled"`
+	Provider   string `toml:"provider"`   // "bm25" (default) or "ollama"
 	Model      string `toml:"model"`      // Ollama model name
 	Dimensions int    `toml:"dimensions"` // Embedding dimension
 	OllamaURL  string `toml:"ollama_url"` // Ollama server URL
@@ -214,6 +215,7 @@ func NewDefaultConfig() *Config {
 		},
 		Embedding: EmbeddingConfig{
 			Enabled:    false,
+			Provider:   "bm25",
 			Model:      "nomic-embed-text",
 			Dimensions: 1536,
 			OllamaURL:  "http://localhost:11434",
