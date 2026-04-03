@@ -7,6 +7,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/embedding"
 	"github.com/wesm/msgvault/internal/extractor"
 	"github.com/wesm/msgvault/internal/pii"
@@ -63,7 +64,7 @@ func withAccount() mcp.ToolOption {
 // Serve creates an MCP server with email archive tools and serves over stdio.
 // It blocks until stdin is closed or the context is cancelled.
 // dataDir is the base data directory (e.g., ~/.msgvault) used for deletions.
-func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir string) error {
+func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir string, cfg *config.Config) error {
 	// Initialize PII filter
 	piiFilter, err := pii.NewFilter()
 	if err != nil {
@@ -79,9 +80,23 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 	// Initialize extractor service
 	extractorSvc := &extractor.ExtractorService{}
 
-	// Initialize embedding service (nil if not configured)
+	// Initialize embedding service and vector store if enabled in config
 	var embeddingSvc embedding.Service
 	var vectorSvc vector.VectorStore
+
+	if cfg != nil && cfg.Embedding.Enabled {
+		ollamaClient := embedding.NewOllamaClient(cfg.Embedding.OllamaURL)
+		embeddingSvc = embedding.NewEmbeddingService(ollamaClient, cfg.Embedding.Model)
+
+		if cfg.Vector.Store == "duckdb" {
+			vectorDSN := "vector.duckdb"
+			vectorSvc, err = vector.NewDuckDBStore(vectorDSN)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Failed to initialize vector store: %v\n", err)
+				vectorSvc = nil
+			}
+		}
+	}
 
 	h := &handlers{
 		engine:         engine,
@@ -105,6 +120,11 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 	s.AddTool(extractAttachmentTool(), h.extractAttachment)
 
 	stdio := server.NewStdioServer(s)
+
+	if vectorSvc != nil {
+		defer vectorSvc.Close()
+	}
+
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
 }
 
