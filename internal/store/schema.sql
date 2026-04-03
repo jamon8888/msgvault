@@ -364,3 +364,17 @@ CREATE INDEX IF NOT EXISTS idx_message_labels_label ON message_labels(label_id);
 
 -- Sync
 CREATE INDEX IF NOT EXISTS idx_sync_runs_source ON sync_runs(source_id, started_at DESC);
+
+-- ============================================================================
+-- SEARCH & INDEXING
+-- ============================================================================
+
+-- Attachment chunks for full-text search
+CREATE TABLE IF NOT EXISTS attachment_chunks (
+    id INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL,
+    attachment_id INTEGER NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    chunk_text TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_attachment ON attachment_chunks(attachment_id);
