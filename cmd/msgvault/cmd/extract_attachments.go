@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/extractor"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/vector"
 )
@@ -52,14 +54,11 @@ func init() {
 }
 
 func runExtractAttachments(cmd *cobra.Command, args []string) error {
-	// Check if embedding is enabled
-	if !cfg.Embedding.Enabled {
-		return fmt.Errorf("embedding not enabled. Add to config.toml:\n\n[embedding]\nenabled = true\nmodel = \"nomic-embed-text\"\nollama_url = \"http://localhost:11434\"")
+	// Check if embedding is enabled (only needed for Ollama provider)
+	if cfg.Embedding.Provider == "ollama" && !cfg.Embedding.Enabled {
+		return fmt.Errorf("embedding not enabled for ollama provider. Add to config.toml:\n\n[embedding]\nenabled = true\nprovider = \"ollama\"\nmodel = \"nomic-embed-text\"\nollama_url = \"http://localhost:11434\"")
 	}
-
-	if cfg.Vector.Store != "duckdb" {
-		return fmt.Errorf("vector store not configured. Add to config.toml:\n\n[vector]\nstore = \"duckdb\"")
-	}
+	// BM25 works without any external service
 
 	// Open database
 	dbPath := cfg.DatabaseDSN()
@@ -93,29 +92,40 @@ func runExtractAttachments(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Processing %d attachments...\n", len(attachments))
 
-	// Initialize services
+	// Initialize search store based on config
+	var searchStore search.SearchStore
+
+	if cfg.Embedding.Provider == "ollama" {
+		ollamaClient := embedding.NewOllamaClient(cfg.Embedding.OllamaURL)
+		embeddingSvc := embedding.NewEmbeddingService(ollamaClient, cfg.Embedding.Model)
+		vectorDir := filepath.Join(cfg.Data.DataDir, "vector.duckdb")
+		vectorSvc, err := vector.NewDuckDBStore(vectorDir)
+		if err != nil {
+			return fmt.Errorf("open vector store: %w", err)
+		}
+		defer func() { _ = vectorSvc.Close() }()
+		if err := vectorSvc.InitSchema(); err != nil {
+			return fmt.Errorf("init vector schema: %w", err)
+		}
+		searchStore = search.NewVectorSearchAdapter(vectorSvc, embeddingSvc)
+	} else {
+		// BM25 uses the same SQLite DB
+		searchStore, err = search.NewBM25Store(s.DB())
+		if err != nil {
+			return fmt.Errorf("init BM25 store: %w", err)
+		}
+	}
+	defer searchStore.Close()
+
+	// Initialize extractor
 	extractorSvc := &extractor.ExtractorService{}
-	ollamaClient := embedding.NewOllamaClient(cfg.Embedding.OllamaURL)
-	embeddingSvc := embedding.NewEmbeddingService(ollamaClient, cfg.Embedding.Model)
-
-	vectorDir := filepath.Join(cfg.Data.DataDir, "vector.duckdb")
-	vectorSvc, err := vector.NewDuckDBStore(vectorDir)
-	if err != nil {
-		return fmt.Errorf("open vector store: %w", err)
-	}
-	defer func() { _ = vectorSvc.Close() }()
-
-	// Initialize schema
-	if err := vectorSvc.InitSchema(); err != nil {
-		return fmt.Errorf("init vector schema: %w", err)
-	}
 
 	// Process attachments
 	processed := 0
 	failed := 0
 
 	for _, att := range attachments {
-		if err := processAttachment(extractorSvc, embeddingSvc, vectorSvc, att, cfg.AttachmentsDir()); err != nil {
+		if err := processAttachment(cmd.Context(), extractorSvc, searchStore, att, cfg.AttachmentsDir()); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to process attachment %d: %v\n", att.ID, err)
 			failed++
 			continue
@@ -145,7 +155,7 @@ func parseFormats(f string) []string {
 	return formats
 }
 
-func processAttachment(extractorSvc extractor.Service, embeddingSvc embedding.Service, vectorSvc vector.VectorStore, att query.AttachmentInfo, attachmentsDir string) error {
+func processAttachment(ctx context.Context, extractorSvc extractor.Service, searchStore search.SearchStore, att query.AttachmentInfo, attachmentsDir string) error {
 	// Get format from mime type
 	format := mimeTypeToFormat(att.MimeType)
 	if format == "" {
@@ -188,19 +198,17 @@ func processAttachment(extractorSvc extractor.Service, embeddingSvc embedding.Se
 		return nil
 	}
 
-	// Generate embeddings and store
+	// Index chunks
 	for i, chunk := range chunks {
-		embedding, err := embeddingSvc.Embed(chunk)
-		if err != nil {
-			return fmt.Errorf("embed: %w", err)
+		if err := searchStore.Index(ctx, int64(i), 0, att.ID, i, chunk); err != nil {
+			return fmt.Errorf("index: %w", err)
 		}
+	}
 
-		if err := vectorSvc.InsertVector(int64(i), 0, att.ID, i, embedding); err != nil {
-			return fmt.Errorf("insert vector: %w", err)
-		}
-
-		if err := vectorSvc.InsertText(int64(i), 0, att.ID, i, chunk); err != nil {
-			return fmt.Errorf("insert text: %w", err)
+	// Flush after all chunks indexed for this attachment
+	if flusher, ok := searchStore.(interface{ Flush() error }); ok {
+		if err := flusher.Flush(); err != nil {
+			return fmt.Errorf("flush: %w", err)
 		}
 	}
 
