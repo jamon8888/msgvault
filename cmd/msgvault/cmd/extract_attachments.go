@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/embedding"
@@ -130,50 +131,18 @@ func runExtractAttachments(cmd *cobra.Command, args []string) error {
 }
 
 func parseFormats(f string) []string {
+	if f == "" {
+		return nil
+	}
+	parts := strings.Split(f, ",")
 	var formats []string
-	for _, f := range splitAndTrim(f, ",") {
-		if f != "" {
-			formats = append(formats, f)
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			formats = append(formats, p)
 		}
 	}
 	return formats
-}
-
-func splitAndTrim(s, sep string) []string {
-	var result []string
-	for _, part := range split(s, sep) {
-		result = append(result, trim(part))
-	}
-	return result
-}
-
-func split(s, sep string) []string {
-	if s == "" {
-		return nil
-	}
-	var result []string
-	start := 0
-	for i := 0; i <= len(s)-len(sep); i++ {
-		if s[i:i+len(sep)] == sep {
-			result = append(result, s[start:i])
-			start = i + len(sep)
-			i += len(sep) - 1
-		}
-	}
-	result = append(result, s[start:])
-	return result
-}
-
-func trim(s string) string {
-	start := 0
-	end := len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
-		end--
-	}
-	return s[start:end]
 }
 
 func processAttachment(extractorSvc extractor.Service, embeddingSvc embedding.Service, vectorSvc vector.VectorStore, att query.AttachmentInfo, attachmentsDir string) error {
@@ -270,26 +239,13 @@ func readAttachmentForExtraction(attachmentsDir, contentHash string) ([]byte, er
 
 func mimeTypeToFormat(mimeType string) string {
 	switch {
-	case contains(mimeType, "pdf"):
+	case strings.Contains(mimeType, "pdf"):
 		return "pdf"
-	case contains(mimeType, "wordprocessingml.document"):
+	case strings.Contains(mimeType, "wordprocessingml.document"):
 		return "docx"
-	case contains(mimeType, "text/"):
+	case strings.Contains(mimeType, "text/"):
 		return "txt"
 	default:
 		return ""
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || find(s, substr) != -1)
-}
-
-func find(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
