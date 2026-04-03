@@ -15,6 +15,7 @@ type VectorStore interface {
 	InsertVector(id int64, messageID int64, attachmentID int64, chunkIndex int, embedding []float64) error
 	InsertText(id int64, messageID int64, attachmentID int64, chunkIndex int, chunkText string) error
 	Search(query []float64, limit int) ([]SearchResult, error)
+	GetTextByAttachmentID(attachmentID int64) ([]string, error)
 	Close() error
 }
 
@@ -116,6 +117,28 @@ func (s *DuckDBStore) Search(query []float64, limit int) ([]SearchResult, error)
 		results = append(results, r)
 	}
 	return results, nil
+}
+
+func (s *DuckDBStore) GetTextByAttachmentID(attachmentID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT chunk_text FROM attachment_text
+		WHERE attachment_id = ?
+		ORDER BY chunk_index
+	`, attachmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var texts []string
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return nil, err
+		}
+		texts = append(texts, text)
+	}
+	return texts, nil
 }
 
 func (s *DuckDBStore) Close() error {

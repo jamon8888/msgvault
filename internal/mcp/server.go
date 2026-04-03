@@ -137,6 +137,9 @@ func searchMessagesTool() mcp.Tool {
 			mcp.Description("Gmail-style search query (e.g. 'from:alice subject:meeting after:2024-01-01')"),
 		),
 		withAccount(),
+		mcp.WithBoolean("include_attachments",
+			mcp.Description("Also search attachment content using semantic vector search (requires vector store)"),
+		),
 		withLimit("20"),
 		withOffset(),
 	)

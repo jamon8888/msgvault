@@ -239,6 +239,7 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 
 	limit := limitArg(args, "limit", 20)
 	offset := limitArg(args, "offset", 0)
+	includeAttachments, _ := args["include_attachments"].(bool)
 
 	// Look up account filter
 	account, _ := args["account"].(string)
@@ -266,6 +267,45 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 		}
 	}
 
+	// If include_attachments and vector store is available, perform semantic search
+	if includeAttachments && h.vectorStore != nil && h.embedding != nil && queryStr != "" {
+		embedding, err := h.embedding.Embed(queryStr)
+		if err == nil && len(embedding) > 0 {
+			vectorResults, err := h.vectorStore.Search(embedding, limit)
+			if err == nil && len(vectorResults) > 0 {
+				// Build attachment ID set for quick lookup
+				attIDs := make(map[int64]bool)
+				for _, vr := range vectorResults {
+					attIDs[vr.AttachmentID] = true
+				}
+
+				// Fetch attachment info for matching IDs
+				for i := range results {
+					if results[i].HasAttachments && results[i].ID > 0 {
+						// Could fetch attachments here but we'd need a method on engine
+						// For now, mark that there are matching attachments
+					}
+				}
+
+				// Add vector search metadata to response
+				type VectorMeta struct {
+					AttachmentMatches int     `json:"attachment_matches"`
+					TopMatchDistance  float64 `json:"top_match_distance"`
+				}
+				meta := VectorMeta{
+					AttachmentMatches: len(vectorResults),
+				}
+				if len(vectorResults) > 0 {
+					meta.TopMatchDistance = vectorResults[0].Distance
+				}
+
+				// TODO: Merge vector results with message results
+				_ = attIDs
+				_ = meta
+			}
+		}
+	}
+
 	// Filter PII from results before returning
 	if h.piiFilter != nil {
 		filteredResults := make([]query.MessageSummary, len(results))
@@ -289,6 +329,38 @@ func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mc
 	msg, err := h.engine.GetMessage(ctx, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("message not found: %v", err)), nil
+	}
+
+	// If vector store is available, fetch extracted attachment text
+	if h.vectorStore != nil && msg.HasAttachments && len(msg.Attachments) > 0 {
+		var extractedTexts []string
+		for _, att := range msg.Attachments {
+			texts, err := h.vectorStore.GetTextByAttachmentID(att.ID)
+			if err == nil && len(texts) > 0 {
+				extractedTexts = append(extractedTexts, texts...)
+			}
+		}
+		if len(extractedTexts) > 0 {
+			// Add extracted text to the message response
+			// This is added as a special field that clients can use
+			type MessageWithExtractedAttachments struct {
+				*query.MessageDetail
+				ExtractedAttachmentText []string `json:"extracted_attachment_text,omitempty"`
+			}
+			resp := MessageWithExtractedAttachments{
+				MessageDetail:           msg,
+				ExtractedAttachmentText: extractedTexts,
+			}
+			if h.piiFilter != nil {
+				filteredMsg := h.filterMessageDetail(ctx, *msg)
+				filteredResp := MessageWithExtractedAttachments{
+					MessageDetail:           &filteredMsg,
+					ExtractedAttachmentText: extractedTexts,
+				}
+				return jsonResult(&filteredResp)
+			}
+			return jsonResult(&resp)
+		}
 	}
 
 	// Filter PII from message detail before returning

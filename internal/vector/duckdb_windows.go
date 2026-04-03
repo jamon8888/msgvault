@@ -10,7 +10,9 @@ var errVectorStoreNotAvailable = errors.New("vector store not available on Windo
 type VectorStore interface {
 	InitSchema() error
 	InsertVector(id int64, messageID int64, attachmentID int64, chunkIndex int, embedding []float64) error
+	InsertText(id int64, messageID int64, attachmentID int64, chunkIndex int, chunkText string) error
 	Search(query []float64, limit int) ([]SearchResult, error)
+	GetTextByAttachmentID(attachmentID int64) ([]string, error)
 	Close() error
 }
 
@@ -42,6 +44,10 @@ func (s *WindowsDuckDBStore) InsertText(id int64, messageID int64, attachmentID 
 }
 
 func (s *WindowsDuckDBStore) Search(query []float64, limit int) ([]SearchResult, error) {
+	return nil, errVectorStoreNotAvailable
+}
+
+func (s *WindowsDuckDBStore) GetTextByAttachmentID(attachmentID int64) ([]string, error) {
 	return nil, errVectorStoreNotAvailable
 }
 
