@@ -4,12 +4,16 @@
 package integration
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/wesm/msgvault/internal/embedding"
 	"github.com/wesm/msgvault/internal/extractor"
+	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/vector"
 )
 
@@ -117,4 +121,41 @@ func TestFullPipeline(t *testing.T) {
 		// 5. Store
 		// 6. Search and verify
 	})
+}
+
+func TestBM25FullPipeline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	store, err := search.NewBM25Store(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	store.Index(ctx, 1, 1, 1, 0, "Invoice #1234 from Acme Corp for $500")
+	store.Index(ctx, 2, 1, 2, 0, "Meeting notes from Q4 planning session")
+	store.Index(ctx, 3, 2, 3, 0, "Project budget allocation for 2025")
+	store.Flush()
+
+	results, err := store.Search(ctx, "invoice acme", 2)
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+	if results[0].AttachmentID != 1 {
+		t.Errorf("expected invoice result first, got attachment %d", results[0].AttachmentID)
+	}
+
+	t.Logf("Search returned %d results, top score: %.4f", len(results), results[0].Score)
 }
