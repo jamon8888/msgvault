@@ -335,6 +335,11 @@ func (c *Config) AnalyticsDir() string {
 	return filepath.Join(c.Data.DataDir, "analytics")
 }
 
+// KeysDir returns the path to the encryption keys directory.
+func (c *Config) KeysDir() string {
+	return filepath.Join(c.Data.DataDir, "keys")
+}
+
 // EnsureHomeDir creates the msgvault home directory if it doesn't exist.
 func (c *Config) EnsureHomeDir() error {
 	return fileutil.SecureMkdirAll(c.HomeDir, 0700)

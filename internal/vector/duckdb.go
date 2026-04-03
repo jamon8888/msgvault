@@ -7,7 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/marcboeker/go-duckdb/v2"
+	_ "github.com/marcboeker/go-duckdb"
 )
 
 type VectorStore interface {
