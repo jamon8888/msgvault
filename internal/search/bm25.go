@@ -161,6 +161,9 @@ func (s *BM25Store) Search(_ context.Context, query string, limit int) ([]Search
 }
 
 func (s *BM25Store) GetChunksByAttachmentID(attachmentID int64) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	rows, err := s.db.Query(
 		`SELECT chunk_text FROM attachment_chunks WHERE attachment_id = ? ORDER BY chunk_index`,
 		attachmentID,
@@ -224,7 +227,11 @@ func (s *BM25Store) rebuildIndex() {
 		return
 	}
 
-	s.bm25, _ = bm25.NewBM25Okapi(texts, bm25Tokenize, 1.5, 0.75, nil)
+	var err error
+	s.bm25, err = bm25.NewBM25Okapi(texts, bm25Tokenize, 1.5, 0.75, nil)
+	if err != nil {
+		s.bm25 = nil
+	}
 }
 
 func bm25Tokenize(text string) []string {
