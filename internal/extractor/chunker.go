@@ -14,9 +14,12 @@ func ChunkText(text string, chunkSize, overlap int) []string {
 			end = len(text)
 		}
 		chunks = append(chunks, text[start:end])
-		start = end - overlap
-		if start <= 0 {
+		if end >= len(text) {
 			break
+		}
+		start = end - overlap
+		if start < 0 {
+			start = 0
 		}
 	}
 

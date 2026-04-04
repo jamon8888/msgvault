@@ -189,7 +189,7 @@ func processAttachment(ctx context.Context, extractorSvc extractor.Service, sear
 	}
 
 	if text == "" {
-		return nil // Skip empty extractions
+		return nil
 	}
 
 	// Chunk text
@@ -201,7 +201,7 @@ func processAttachment(ctx context.Context, extractorSvc extractor.Service, sear
 	// Index chunks
 	for i, chunk := range chunks {
 		if err := searchStore.Index(ctx, int64(i), 0, att.ID, i, chunk); err != nil {
-			return fmt.Errorf("index: %w", err)
+			return fmt.Errorf("index chunk %d: %w", i, err)
 		}
 	}
 

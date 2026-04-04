@@ -94,6 +94,11 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB, o
 		return nil, fmt.Errorf("set threads: %w", err)
 	}
 
+	// Enable auto-install and auto-load of known extensions (json, sqlite, etc.)
+	if _, err := db.Exec("SET autoinstall_known_extensions=1; SET autoload_known_extensions=1;"); err != nil {
+		log.Printf("[warn] failed to enable DuckDB auto-install of extensions: %v", err)
+	}
+
 	// Install and load SQLite extension if we have a SQLite path.
 	// On Windows, the sqlite_scanner extension is not available for MinGW
 	// builds — all detail queries route through sqliteEngine instead.

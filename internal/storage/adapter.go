@@ -29,14 +29,14 @@ type PutOptions struct {
 
 // S3Config holds S3/MinIO configuration.
 type S3Config struct {
-	Endpoint    string
-	Region      string
-	AccessKey   string
-	SecretKey   string
-	Bucket      string
-	ObjectLock  bool
-	InMemory    bool
-	UseSSL      bool
+	Endpoint   string
+	Region     string
+	AccessKey  string
+	SecretKey  string
+	Bucket     string
+	ObjectLock bool
+	InMemory   bool
+	UseSSL     bool
 }
 
 // S3Adapter implements StorageAdapter for S3/MinIO.

@@ -23,7 +23,7 @@ type Config struct {
 
 // Shredder handles crypto-shredding operations.
 type Shredder struct {
-	cfg       *Config
+	cfg        *Config
 	keyHandler KeyHandler
 }
 
@@ -51,7 +51,7 @@ func NewShredder(cfg *Config) (*Shredder, error) {
 	}
 
 	return &Shredder{
-		cfg:       cfg,
+		cfg:        cfg,
 		keyHandler: keyHandler,
 	}, nil
 }
