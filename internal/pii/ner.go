@@ -40,13 +40,23 @@ type NERDetector struct {
 }
 
 // NewNERDetector creates a NER-based PII detector.
-// If enabledTypes is empty, all entity types are detected.
+// If enabledTypes is empty, only PII-relevant types are enabled:
+// PERSON, ORG, MONEY, LAW, FAC (excludes noisy types like GPE, DATE, CARDINAL).
 func NewNERDetector(enabledTypes ...string) *NERDetector {
 	d := &NERDetector{}
 	if len(enabledTypes) > 0 {
 		d.enabled = make(map[string]bool, len(enabledTypes))
 		for _, t := range enabledTypes {
 			d.enabled[strings.ToUpper(t)] = true
+		}
+	} else {
+		// Default: only PII-relevant entity types
+		d.enabled = map[string]bool{
+			"PERSON": true,
+			"ORG":    true,
+			"MONEY":  true,
+			"LAW":    true,
+			"FAC":    true,
 		}
 	}
 	return d
@@ -75,6 +85,10 @@ func (d *NERDetector) DetectAndReplace(text string) string {
 			continue
 		}
 		if d.enabled != nil && !d.enabled[ent.Label] {
+			continue
+		}
+		// Skip very short entities (likely false positives)
+		if len(ent.Text) < 3 {
 			continue
 		}
 		idx := strings.Index(text, ent.Text)

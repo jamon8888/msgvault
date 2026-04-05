@@ -257,6 +257,24 @@ var frenchPatterns = []legalPattern{
 		re:   regexp.MustCompile(`(?i)certificat\s+médical\s+(?:du|n°\s*)(\d{2}[/\-.]\d{2}[/\-.]\d{4})`),
 		tag:  "[MEDICAL_CERT]",
 	},
+	// NIR (Sécurité sociale) — wuming misses this format: 1 90 01 75 112 089 32
+	{
+		name: "fr_nir",
+		re:   regexp.MustCompile(`\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2,3}\b`),
+		tag:  "[NIR]",
+	},
+	// IBAN — wuming breaks this into phone numbers
+	{
+		name: "fr_iban",
+		re:   regexp.MustCompile(`\b[A-Z]{2}\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{0,3}\b`),
+		tag:  "[IBAN]",
+	},
+	// IBAN compact (no spaces)
+	{
+		name: "fr_iban_compact",
+		re:   regexp.MustCompile(`\b[A-Z]{2}\d{20,34}\b`),
+		tag:  "[IBAN]",
+	},
 }
 
 // ─── UK Legal Patterns ─────────────────────────────────────────────────

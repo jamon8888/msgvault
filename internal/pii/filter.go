@@ -20,9 +20,12 @@ type Config struct {
 
 // Filter provides PII detection and redaction via a 3-pass pipeline:
 //
-//	Pass 1: wuming — structured PII (email, phone, IBAN, NIR, etc.)
-//	Pass 2: prose NER — named entities (PERSON, ORG, GPE, MONEY, etc.)
-//	Pass 3: legal regex — legal-specific patterns (case numbers, bar refs, etc.)
+//	Pass 1: legal regex — legal-specific patterns (case numbers, bar refs, etc.)
+//	Pass 2: wuming — structured PII (email, phone, IBAN, NIR, etc.)
+//	Pass 3: prose NER — named entities (PERSON, ORG, GPE, MONEY, etc.)
+//
+// Order matters: legal patterns must run BEFORE wuming, otherwise wuming
+// replaces numbers with [PHONE]/[POSTAL_CODE] and breaks legal regex matching.
 type Filter struct {
 	wuming    *wuming.Wuming
 	ner       *NERDetector
@@ -70,7 +73,13 @@ func (f *Filter) FilterString(ctx context.Context, input string) (string, error)
 	result := input
 	var err error
 
-	// Pass 1: wuming — structured PII (email, phone, IBAN, NIR, credit card, etc.)
+	// Pass 1: legal regex — legal-specific patterns (case numbers, bar refs, etc.)
+	// Must run FIRST so wuming doesn't consume numbers as [PHONE]/[POSTAL_CODE]
+	if f.legalMode && f.legal != nil {
+		result = f.legal.DetectAndReplace(result)
+	}
+
+	// Pass 2: wuming — structured PII (email, phone, IBAN, NIR, credit card, etc.)
 	if f.wuming != nil {
 		result, err = f.wuming.Redact(ctx, result)
 		if err != nil {
@@ -78,14 +87,9 @@ func (f *Filter) FilterString(ctx context.Context, input string) (string, error)
 		}
 	}
 
-	// Pass 2: NER — named entities (PERSON, ORG, GPE, MONEY, LAW, etc.)
+	// Pass 3: NER — named entities (PERSON, ORG, GPE, MONEY, LAW, etc.)
 	if f.nerMode && f.ner != nil {
 		result = f.ner.DetectAndReplace(result)
-	}
-
-	// Pass 3: legal regex — legal-specific patterns (case numbers, bar refs, etc.)
-	if f.legalMode && f.legal != nil {
-		result = f.legal.DetectAndReplace(result)
 	}
 
 	return result, nil
