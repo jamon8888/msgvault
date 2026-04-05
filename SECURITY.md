@@ -49,15 +49,37 @@ If you discover a security vulnerability in msgvault, please report it responsib
 - Email addresses validated before database insertion
 - Gmail API message IDs validated as alphanumeric
 
+**PII filtering:**
+- All MCP responses pass through a 3-pass PII detection pipeline before returning to the client.
+- Pass 1: Structured PII (email, phone, IBAN, credit card, SSN, NIR) via wuming.
+- Pass 2: Named entity recognition (PERSON, ORG, GPE, MONEY, DATE, etc.) via prose.
+- Pass 3: Jurisdiction-specific legal patterns (FR, UK, US, DE) via regex.
+- PII is replaced with descriptive tags (e.g., `[EMAIL]`, `[PHONE]`, `[PERSON]`) to preserve context.
+- See [docs/pii-filtering.md](docs/pii-filtering.md) for full details.
+
+**Crypto-shredding:**
+- AES-256-GCM encryption with per-message keys for RGPD (GDPR) right-to-be-erasure compliance.
+- Keys are stored separately from encrypted data; deleting a key renders data unrecoverable.
+- Currently used by `serve-archive` (Legal Vault SMTP ingestion).
+- Master key wrapping (EncryptKey/DecryptKey) is not yet implemented — keys are stored unencrypted on disk.
+- Decryption (unshred) is not yet implemented.
+
 ### Known limitations
 
-**No encryption at rest:**
+**Partial encryption at rest:**
 - The SQLite database is not encrypted. Anyone with filesystem access to `~/.msgvault/` can read all archived emails.
 - OAuth tokens are stored as plaintext JSON files (protected by file permissions only).
+- **Crypto-shredding** is implemented for new email ingestion via `serve-archive` (AES-256-GCM with per-message keys), but unshred (decryption) is not yet implemented.
 - Mitigation: Rely on OS-level full-disk encryption (FileVault, BitLocker, LUKS).
+
+**PII filtering scope:**
+- PII filtering applies only to MCP responses, not to the underlying database or TUI.
+- The 3-pass pipeline (wuming + NER + legal regex) may miss edge cases or produce false positives.
+- Legal pattern detection covers FR, UK, US, and DE jurisdictions only.
 
 **CGO dependencies:**
 - SQLite (mattn/go-sqlite3) and DuckDB (marcboeker/go-duckdb) use CGO, introducing native code that is harder to audit than pure Go.
+- go-fitz (libmupdf) for PDF extraction requires CGO and is not available on Windows.
 - Mitigation: Pin dependency versions, use govulncheck in CI, review updates via Dependabot.
 
 **Gmail API deletion:**

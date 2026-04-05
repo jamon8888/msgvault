@@ -276,6 +276,64 @@ Manually trigger an incremental sync for an account.
 
 ---
 
+### Upload OAuth Token
+
+```
+POST /api/v1/auth/token/:email
+```
+
+Upload an OAuth token from a local machine to a remote msgvault server. Used by `export-token` for headless NAS deployment.
+
+**Path Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `email` | string | Email address associated with the token |
+
+**Request Body:** JSON with token data (sent by `export-token` command)
+
+**Response (200 OK):**
+```json
+{
+  "status": "ok",
+  "message": "Token uploaded for user@gmail.com"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request` - Invalid token data
+- `404 Not Found` - Account not found on server
+
+---
+
+### Create Account
+
+```
+POST /api/v1/accounts
+```
+
+Register a new email account on the remote server.
+
+**Request Body:**
+```json
+{
+  "email": "user@example.com",
+  "display_name": "Work Account",
+  "source_type": "gmail"
+}
+```
+
+**Response (201 Created):**
+```json
+{
+  "id": 1,
+  "email": "user@example.com",
+  "display_name": "Work Account",
+  "source_type": "gmail"
+}
+```
+
+---
+
 ### Scheduler Status
 
 ```

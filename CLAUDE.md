@@ -10,7 +10,7 @@ PR descriptions should be concise and changelog-oriented: what changed, why, and
 
 ## Project Overview
 
-msgvault is an offline Gmail archive tool that exports and stores email data locally with full-text search capabilities. The goal is to archive 20+ years of Gmail data from multiple accounts, make it searchable, and eventually delete emails from Gmail once safely archived.
+msgvault is an offline email archive tool that exports and stores email data locally with full-text search, semantic attachment search, and PII-safe MCP access. It supports Gmail, Microsoft 365/Outlook, and any IMAP server. The goal is to archive decades of email from multiple accounts, make it searchable (including attachment content), and eventually delete emails from the source once safely archived.
 
 ## Architecture (Go)
 
@@ -26,9 +26,32 @@ msgvault/
 │   ├── store/               # SQLite database access
 │   ├── deletion/            # Deletion staging and manifest
 │   ├── gmail/               # Gmail API client
+│   ├── microsoft/           # Microsoft OAuth2 + XOAUTH2
+│   ├── imap/                # Generic IMAP client (password + XOAUTH2)
+│   ├── smtp/                # SMTP server (Legal Vault journaling)
 │   ├── sync/                # Sync orchestration
-│   ├── oauth/               # OAuth2 flows (browser + device)
-│   └── mime/                # MIME parsing
+│   ├── oauth/               # Google OAuth2 flows (browser + device)
+│   ├── mime/                # MIME parsing
+│   ├── mcp/                 # MCP server (AI assistant integration)
+│   ├── pii/                 # PII filtering (wuming + NER + legal)
+│   ├── search/              # BM25 + vector search for attachments
+│   ├── extractor/           # PDF/DOCX/TXT text extraction
+│   ├── embedding/           # Ollama embedding service
+│   ├── vector/              # DuckDB VSS vector store
+│   ├── crypto/              # AES-256-GCM crypto-shredding
+│   ├── remote/              # Remote HTTP client (for serve mode)
+│   ├── scheduler/           # Cron-based sync scheduler
+│   ├── api/                 # HTTP API server (serve mode)
+│   ├── config/              # Configuration management
+│   ├── export/              # EML export utilities
+│   ├── importer/            # MBOX/IMAP import logic
+│   ├── applemail/           # Apple Mail .emlx parsing
+│   ├── emlx/                # .emlx file format handling
+│   ├── mbox/                # MBOX file parsing
+│   ├── fileutil/            # File permission utilities
+│   ├── textutil/            # Text processing utilities
+│   ├── update/              # Self-update functionality
+│   └── storage/             # Storage abstraction layer
 │
 ├── go.mod                   # Go module
 └── Makefile                 # Build targets
@@ -49,6 +72,8 @@ make lint                     # Run linter
 ./msgvault add-account you@gmail.com                  # Browser OAuth
 ./msgvault add-account you@gmail.com --headless       # Device flow
 ./msgvault add-account you@acme.com --oauth-app acme  # Named OAuth app
+./msgvault add-o365 you@company.com                   # Microsoft 365 / Outlook
+./msgvault add-imap --host imap.example.com --username user@example.com  # Generic IMAP
 ./msgvault sync-full you@gmail.com --limit 100        # Sync with limit
 ./msgvault sync-full you@gmail.com --after 2024-01-01 # Sync date range
 ./msgvault sync-incremental you@gmail.com             # Incremental sync
@@ -67,11 +92,28 @@ make lint                     # Run linter
 ./msgvault import-emlx --account me@gmail.com         # Specific account(s)
 ./msgvault import-emlx /path/to/dir --identifier me@gmail.com  # Manual fallback
 
+# Attachment extraction and search
+./msgvault extract-attachments                        # Extract & index attachment text
+./msgvault extract-attachments --limit 50 --reprocess # Re-extract with limit
+./msgvault export-attachment <hash> -o file.pdf       # Export single attachment
+./msgvault export-attachments <msg-id> -o /tmp/att    # Export all from message
+
+# MCP server (PII-filtered)
+./msgvault mcp                                        # Start MCP server
+
 # Daemon mode (NAS/server deployment)
 ./msgvault serve                                      # Start HTTP API + scheduled syncs
+./msgvault export-token you@gmail.com --to https://nas:8080  # Push token to remote
+
+# Legal Vault (SMTP ingestion)
+./msgvault serve-archive --smtp-host mail.example.com # SMTP journaling server
+
+# Subset creation (testing/demos)
+./msgvault create-subset -o /tmp/demo --rows 1000     # Create smaller DB
 
 # Maintenance
 ./msgvault repair-encoding                            # Fix UTF-8 encoding issues
+./msgvault update-account you@gmail.com --display-name "Work"  # Update account
 ```
 
 ## Key Files
@@ -79,12 +121,24 @@ make lint                     # Run linter
 ### CLI (`cmd/msgvault/cmd/`)
 - `root.go` - Cobra root command, config loading
 - `syncfull.go` - Full sync command implementation
-- `syncincremental.go` - Incremental sync command
+- `sync.go` - Incremental sync command
 - `tui.go` - TUI command, cache auto-build
 - `build_cache.go` - Parquet cache builder (DuckDB)
 - `repair_encoding.go` - UTF-8 encoding repair
-
 - `import_emlx.go` - Apple Mail .emlx import command
+- `addaccount.go` - Gmail OAuth account setup
+- `addo365.go` - Microsoft 365/Outlook OAuth setup
+- `addimap.go` - Generic IMAP account setup
+- `extract_attachments.go` - Extract & index attachment text
+- `export_attachment.go` - Export single attachment by content hash
+- `export_attachments.go` - Export all attachments from a message
+- `export_token.go` - Export OAuth token to remote instance
+- `update_account.go` - Update account settings
+- `create_subset.go` - Create smaller DB subset for testing
+- `serve_archive.go` - Legal Vault SMTP ingestion server
+- `mcp.go` - MCP server command
+- `serve.go` - HTTP API daemon command
+- `deletions.go` - Deletion management (list/show/cancel/execute)
 
 ### Core (`internal/`)
 - `tui/model.go` - Bubble Tea TUI model and update logic
@@ -96,9 +150,36 @@ make lint                     # Run linter
 - `store/schema_sqlite.sql` - FTS5 virtual table
 - `deletion/manifest.go` - Deletion staging and manifest generation
 - `gmail/client.go` - Gmail API client with rate limiting
+- `microsoft/oauth.go` - Microsoft OAuth2 + XOAUTH2 manager
+- `imap/client.go` - Generic IMAP client (implements gmail.API)
+- `smtp/server.go` - SMTP server for email ingestion
 - `oauth/oauth.go` - OAuth2 flows (browser + device)
 - `sync/sync.go` - Sync orchestration, MIME parsing
 - `mime/parse.go` - MIME message parsing
+- `mcp/server.go` - MCP server with PII-filtered handlers
+- `mcp/handlers.go` - MCP tool implementations
+- `pii/filter.go` - 3-pass PII filtering (wuming + NER + legal)
+- `pii/ner.go` - Named entity recognition via prose
+- `pii/legal.go` - Jurisdiction-specific legal pattern detection
+- `search/bm25.go` - BM25 full-text search over attachment chunks
+- `search/parser.go` - Gmail-like query parser
+- `search/vector.go` - Vector search adapter (DuckDB VSS)
+- `extractor/extractor.go` - PDF/DOCX/TXT text extraction service
+- `extractor/chunker.go` - Text chunking for search indexing
+- `extractor/fitz.go` - PDF extraction via go-fitz (libmupdf)
+- `extractor/docx.go` - DOCX extraction via godocx
+- `embedding/service.go` - Ollama embedding service
+- `vector/duckdb.go` - DuckDB VSS vector store with HNSW index
+- `crypto/shredder.go` - AES-256-GCM crypto-shredding
+- `crypto/keyhandler.go` - File-based key management
+- `remote/store.go` - Remote HTTP client for serve mode
+- `remote/engine.go` - Remote query engine implementation
+- `scheduler/scheduler.go` - Cron-based sync scheduler
+- `api/server.go` - HTTP API server endpoints
+- `config/config.go` - Configuration management
+- `export/eml.go` - EML export utilities
+- `importer/mbox.go` - MBOX import logic
+- `importer/imap.go` - IMAP import logic
 
 ### TUI Keybindings
 - `j/k` or `↑/↓` - Navigate rows
@@ -163,16 +244,32 @@ The TUI automatically builds/updates the Parquet cache on launch when new messag
 
 ### Completed
 - **Gmail Sync**: Full/incremental sync, OAuth (browser + headless), rate limiting, resumable checkpoints
+- **Microsoft 365/Outlook**: OAuth2 + XOAUTH2 over IMAP, personal/org auto-detection, scope correction
+- **Generic IMAP**: Password auth, TLS/STARTTLS, any IMAP server
 - **MIME Parsing**: Subject, body (text/HTML), attachments, charset detection
 - **Parquet ETL**: DuckDB-based SQLite → Parquet export with incremental updates
 - **Query Engine**: DuckDB over Parquet for fast aggregate analytics
 - **TUI**: Full-featured TUI with drill-down navigation, search, selection, deletion staging
 - **UTF-8 Repair**: Comprehensive encoding repair for all string fields
 - **Deletion Execution**: Execute staged deletions via Gmail API (trash or permanent delete)
+- **PII Filtering**: 3-pass pipeline (wuming + NER + legal) on all MCP responses
+- **BM25 Attachment Search**: Pure Go BM25 over attachment text chunks (SQLite-backed)
+- **Attachment Extraction**: PDF (go-fitz), DOCX (godocx), TXT text extraction and chunking
+- **Vector Search**: Ollama embeddings + DuckDB VSS with HNSW index (Linux/macOS)
+- **Crypto-Shredding**: AES-256-GCM encryption with per-message keys for RGPD compliance
+- **SMTP Server**: Email ingestion server for Legal Vault journaling mode
+- **MCP Server**: 10 tools with automatic PII filtering for AI assistant integration
+- **Remote Mode**: HTTP API + remote query engine for NAS/server deployment
+- **MBOX/Apple Mail Import**: Offline import from MBOX exports and .emlx directories
 
 ### Not Yet Implemented
-- **App-level encryption**: Encrypt database and attachments at rest
+- **Master key encryption**: FileKeyHandler EncryptKey/DecryptKey are pass-through (no master key wrapping)
+- **Unshred operation**: Crypto-shredding decryption not yet implemented
+- **Windows vector search**: DuckDB VSS not available on Windows
+- **Windows PDF extraction**: go-fitz/libmupdf not available on Windows
 - **Web UI**: Browser-based interface
+- **Incremental sync for IMAP/Microsoft 365**: Full sync required each time
+- **Headless OAuth for Microsoft 365**: Browser required
 
 ## Testing with Real Gmail Data
 
@@ -251,6 +348,8 @@ All data defaults to `~/.msgvault/`:
 - `~/.msgvault/attachments/` - Content-addressed attachment storage
 - `~/.msgvault/tokens/` - OAuth tokens per account
 - `~/.msgvault/analytics/` - Parquet cache files
+- `~/.msgvault/keys/` - Crypto-shredding keys
+- `~/.msgvault/vector.duckdb` - Vector search index (if enabled)
 
 Override with `MSGVAULT_HOME` environment variable.
 
@@ -265,6 +364,51 @@ client_secrets = "/path/to/client_secret.json"
 # [oauth.apps.acme]
 # client_secrets = "/path/to/acme_secret.json"
 
+[microsoft]
+client_id = "your-azure-app-client-id"
+tenant_id = "common"  # optional, defaults to "common"
+
 [sync]
 rate_limit_qps = 5
+
+[extraction]
+enabled = false
+mode = "hybrid"
+recent_days = 30
+formats = ["pdf", "docx", "txt"]
+
+[embedding]
+enabled = false
+provider = "bm25"        # "bm25" (default) or "ollama"
+model = "nomic-embed-text"
+dimensions = 1536
+ollama_url = "http://localhost:11434"
+
+[vector]
+store = "duckdb"
+index_type = "hnsw"
+
+[chat]
+server = "http://localhost:11434"
+model = "gpt-oss-128k"
+max_results = 20
+
+[server]
+api_port = 8080
+bind_addr = "127.0.0.1"
+api_key = ""
+allow_insecure = false
+cors_origins = []
+cors_credentials = false
+cors_max_age = 0
+
+[remote]
+url = "http://nas.local:8080"
+api_key = ""
+allow_insecure = false
+
+[[accounts]]                    # Scheduled syncs
+email = "you@gmail.com"
+schedule = "0 2 * * *"
+enabled = true
 ```

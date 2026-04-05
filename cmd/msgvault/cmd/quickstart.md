@@ -252,6 +252,90 @@ msgvault update --yes     # Skip confirmation
 msgvault version
 ```
 
+## Attachment extraction and search
+
+Extract text from PDF, DOCX, and TXT attachments for full-text (BM25) or semantic (Ollama) search.
+
+```bash
+# Extract and index text from all unprocessed attachments
+msgvault extract-attachments
+
+# Limit to 50 attachments
+msgvault extract-attachments --limit 50
+
+# Re-process already indexed attachments
+msgvault extract-attachments --reprocess
+
+# Process only PDF files
+msgvault extract-attachments --format pdf
+
+# Process multiple formats
+msgvault extract-attachments --format pdf,docx
+```
+
+### Export attachments
+
+```bash
+# Export a single attachment by SHA-256 content hash
+msgvault export-attachment <hash>
+msgvault export-attachment <hash> -o file.pdf
+
+# Export as JSON with base64-encoded data
+msgvault export-attachment <hash> --json
+
+# Export raw base64 to stdout
+msgvault export-attachment <hash> --base64
+
+# Export all attachments from a message
+msgvault export-attachments <message-id>
+msgvault export-attachments <message-id> -o /tmp/attachments
+```
+
+## NAS / Remote deployment
+
+```bash
+# Export OAuth token to a remote msgvault instance
+msgvault export-token you@gmail.com --to https://nas.local:8080
+
+# With explicit API key
+msgvault export-token you@gmail.com --to https://nas.local:8080 --api-key your-key
+
+# Allow HTTP for trusted networks (e.g., Tailscale)
+msgvault export-token you@gmail.com --to http://nas.local:8080 --allow-insecure
+
+# Uses MSGVAULT_REMOTE_URL and MSGVAULT_REMOTE_API_KEY env vars if set
+```
+
+## Account management
+
+```bash
+# Update account display name
+msgvault update-account you@gmail.com --display-name "Work Account"
+```
+
+## Testing and demos
+
+```bash
+# Create a smaller database with the N most recent messages
+msgvault create-subset -o /tmp/demo --rows 1000
+
+# Use the subset
+MSGVAULT_HOME=/tmp/demo msgvault tui
+```
+
+## Legal Vault (SMTP ingestion)
+
+```bash
+# Start SMTP server for email journaling
+msgvault serve-archive --smtp-host mail.example.com --smtp-port 2525
+
+# With MinIO storage
+msgvault serve-archive --smtp-host mail.example.com --storage minio
+
+# With WORM (immutable storage)
+msgvault serve-archive --smtp-host mail.example.com --worm
+```
+
 ## Interactive TUI
 
 ```bash
@@ -301,6 +385,59 @@ In remote mode, deletion staging and attachment export are disabled for safety.
 | `D`              | Stage all matching current filter for deletion  |
 | `?`              | Help                                            |
 | `q`              | Quit                                            |
+
+## MCP Server
+
+msgvault exposes 10 tools over stdio for AI assistants. All responses are automatically PII-filtered.
+
+```bash
+msgvault mcp
+```
+
+### Available MCP Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `search_messages` | Search emails with Gmail-like query syntax | `query`, `account`, `include_attachments`, `limit`, `offset` |
+| `get_message` | Get full message details including body and attachments | `id` |
+| `get_attachment` | Get attachment content by ID | `attachment_id` |
+| `export_attachment` | Save attachment to local filesystem | `attachment_id`, `destination` |
+| `list_messages` | List messages with optional filters | `account`, `from`, `to`, `label`, `after`, `before`, `has_attachment`, `limit`, `offset` |
+| `get_stats` | Get archive overview (messages, size, attachments, accounts) | none |
+| `aggregate` | Grouped statistics (senders, domains, labels, time) | `group_by`, `account`, `limit`, `after`, `before` |
+| `stage_deletion` | Stage messages for deletion (does not delete immediately) | `account`, `query`, `from`, `domain`, `label`, `after`, `before`, `has_attachment` |
+| `search_attachments` | Search attachment content (BM25 or semantic) | `query`, `limit`, `attachment_types` |
+| `extract_attachment` | Extract and index text from an attachment | `attachment_id`, `force` |
+
+### PII Filtering
+
+All MCP tool responses pass through a 3-pass PII detection pipeline:
+1. **Structured PII** (wuming): email, phone, IBAN, credit card, SSN, NIR
+2. **Named Entity Recognition** (prose): PERSON, ORG, GPE, MONEY, DATE, etc.
+3. **Legal patterns** (regex): case numbers, bar refs, jurisdiction-specific identifiers (FR, UK, US, DE)
+
+PII is replaced with descriptive tags (e.g., `[EMAIL]`, `[PHONE]`, `[PERSON]`).
+
+### Semantic Search Configuration
+
+By default, attachment search uses BM25 (pure Go, no external dependencies). To enable semantic search with Ollama:
+
+```toml
+[embedding]
+enabled = true
+provider = "ollama"
+model = "nomic-embed-text"
+ollama_url = "http://localhost:11434"
+
+[vector]
+store = "duckdb"
+index_type = "hnsw"
+```
+
+Then extract attachment text:
+```bash
+msgvault extract-attachments
+```
 
 ## Typical agent workflow
 
