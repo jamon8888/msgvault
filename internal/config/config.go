@@ -191,9 +191,9 @@ func DefaultHome() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".msgvault"
+		return ".hacienda"
 	}
-	return filepath.Join(home, ".msgvault")
+	return filepath.Join(home, ".hacienda")
 }
 
 // NewDefaultConfig returns a configuration with default values.
@@ -238,7 +238,7 @@ func NewDefaultConfig() *Config {
 }
 
 // Load reads the configuration from the specified file.
-// If path is empty, uses the default location (~/.msgvault/config.toml),
+// If path is empty, uses the default location (~/.hacienda/config.toml),
 // which is optional (missing file returns defaults).
 // If path is explicitly provided, the file must exist.
 //
@@ -259,7 +259,7 @@ func Load(path, homeDir string) (*Config, error) {
 	if !explicit {
 		path = filepath.Join(cfg.HomeDir, "config.toml")
 	} else {
-		// Expand ~ for explicit paths (e.g. --config "~/.msgvault/config.toml"
+		// Expand ~ for explicit paths (e.g. --config "~/.hacienda/config.toml"
 		// where the shell didn't expand it, or on Windows where ~ is never expanded).
 		path = expandPath(path)
 	}
@@ -451,7 +451,7 @@ func (c *Config) GetAccountSchedule(email string) *AccountSchedule {
 // It tries the following locations in order:
 //  1. Each directory in preferredDirs (if any)
 //  2. The system default temp directory (os.TempDir())
-//  3. A "tmp" subdirectory under the msgvault home directory (~/.msgvault/tmp/)
+//  3. A "tmp" subdirectory under the hacienda home directory (~/.hacienda/tmp/)
 //
 // The first successful location is used. If all locations fail, the error
 // from the system temp dir attempt is returned along with the final fallback error.
@@ -475,7 +475,7 @@ func MkTempDir(pattern string, preferredDirs ...string) (string, error) {
 		return dir, nil
 	}
 
-	// Fallback: use ~/.msgvault/tmp/
+	// Fallback: use ~/.hacienda/tmp/
 	fallbackBase := filepath.Join(DefaultHome(), "tmp")
 	if err := fileutil.SecureMkdirAll(fallbackBase, 0700); err != nil {
 		return "", fmt.Errorf("create temp dir: %w (fallback also failed: %v)", sysErr, err)
