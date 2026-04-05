@@ -8,43 +8,98 @@ import (
 	"github.com/taoq-ai/wuming"
 )
 
-// Filter provides PII detection and redaction capabilities.
-type Filter struct {
-	wuming *wuming.Wuming
+// Config controls PII filtering behavior.
+type Config struct {
+	// LegalMode enables legal-specific PII detectors (case numbers, lawyer IDs, etc.)
+	LegalMode bool
+	// NERMode enables named entity recognition via prose (PERSON, ORG, MONEY, etc.)
+	NERMode bool
+	// Jurisdictions for legal detectors: "fr", "uk", "us", "de". Empty = all.
+	Jurisdictions []string
 }
 
-// NewFilter creates a new PII filter with default configuration.
-// It detects and redacts common PII types like emails, phone numbers, names, etc.
-func NewFilter() (*Filter, error) {
-	// Create a wuming instance with default settings
-	// This will detect common PII types and replace them with tags like [EMAIL], [PHONE], etc.
+// Filter provides PII detection and redaction via a 3-pass pipeline:
+//
+//	Pass 1: wuming — structured PII (email, phone, IBAN, NIR, etc.)
+//	Pass 2: prose NER — named entities (PERSON, ORG, GPE, MONEY, etc.)
+//	Pass 3: legal regex — legal-specific patterns (case numbers, bar refs, etc.)
+type Filter struct {
+	wuming    *wuming.Wuming
+	ner       *NERDetector
+	legal     *LegalDetector
+	legalMode bool
+	nerMode   bool
+}
+
+// NewFilter creates a PII filter with the given configuration.
+// A nil config uses defaults (wuming only, no legal or NER).
+func NewFilter(cfg *Config) (*Filter, error) {
 	w, err := wuming.New()
 	if err != nil {
 		return nil, err
 	}
 
-	return &Filter{
+	f := &Filter{
 		wuming: w,
-	}, nil
+	}
+
+	if cfg != nil {
+		f.legalMode = cfg.LegalMode
+		f.nerMode = cfg.NERMode
+
+		if cfg.LegalMode {
+			f.legal = NewLegalDetector(LegalDetectorConfig{
+				Jurisdictions: cfg.Jurisdictions,
+			})
+		}
+
+		if cfg.NERMode {
+			f.ner = NewNERDetector()
+		}
+	}
+
+	return f, nil
 }
 
-// FilterString redacts PII from a single string.
+// FilterString redacts PII from a single string through the 3-pass pipeline.
 func (f *Filter) FilterString(ctx context.Context, input string) (string, error) {
-	if f.wuming == nil {
+	if input == "" {
 		return input, nil
 	}
-	return f.wuming.Redact(ctx, input)
+
+	result := input
+	var err error
+
+	// Pass 1: wuming — structured PII (email, phone, IBAN, NIR, credit card, etc.)
+	if f.wuming != nil {
+		result, err = f.wuming.Redact(ctx, result)
+		if err != nil {
+			return input, err
+		}
+	}
+
+	// Pass 2: NER — named entities (PERSON, ORG, GPE, MONEY, LAW, etc.)
+	if f.nerMode && f.ner != nil {
+		result = f.ner.DetectAndReplace(result)
+	}
+
+	// Pass 3: legal regex — legal-specific patterns (case numbers, bar refs, etc.)
+	if f.legalMode && f.legal != nil {
+		result = f.legal.DetectAndReplace(result)
+	}
+
+	return result, nil
 }
 
 // FilterStrings redacts PII from a slice of strings.
 func (f *Filter) FilterStrings(ctx context.Context, inputs []string) ([]string, error) {
-	if f.wuming == nil || len(inputs) == 0 {
+	if len(inputs) == 0 {
 		return inputs, nil
 	}
 
 	results := make([]string, len(inputs))
 	for i, input := range inputs {
-		filtered, err := f.wuming.Redact(ctx, input)
+		filtered, err := f.FilterString(ctx, input)
 		if err != nil {
 			return nil, err
 		}

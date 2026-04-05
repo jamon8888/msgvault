@@ -8,7 +8,7 @@ import (
 )
 
 func TestFilterString(t *testing.T) {
-	filter, err := NewFilter()
+	filter, err := NewFilter(nil)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -54,7 +54,7 @@ func TestFilterString(t *testing.T) {
 }
 
 func TestFilterStrings(t *testing.T) {
-	filter, err := NewFilter()
+	filter, err := NewFilter(nil)
 	require.NoError(t, err)
 
 	input := []string{

@@ -69,7 +69,12 @@ func withAccount() mcp.ToolOption {
 // dataDir is the base data directory (e.g., ~/.msgvault) used for deletions.
 func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir string, cfg *config.Config) error {
 	// Initialize PII filter
-	piiFilter, err := pii.NewFilter()
+	piiCfg := &pii.Config{
+		LegalMode:     true,
+		NERMode:       true,
+		Jurisdictions: []string{"fr", "uk", "us", "de"},
+	}
+	piiFilter, err := pii.NewFilter(piiCfg)
 	if err != nil {
 		return fmt.Errorf("failed to initialize PII filter: %w", err)
 	}
