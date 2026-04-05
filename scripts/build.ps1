@@ -13,9 +13,9 @@ if (-not $commit) { $commit = "unknown" }
 $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 $ldflags = @(
-    "-X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=$version"
-    "-X github.com/wesm/msgvault/cmd/msgvault/cmd.Commit=$commit"
-    "-X github.com/wesm/msgvault/cmd/msgvault/cmd.BuildDate=$buildDate"
+    "-X github.com/jamon8888/msgvault/cmd/msgvault/cmd.Version=$version"
+    "-X github.com/jamon8888/msgvault/cmd/msgvault/cmd.Commit=$commit"
+    "-X github.com/jamon8888/msgvault/cmd/msgvault/cmd.BuildDate=$buildDate"
 ) -join ' '
 
 $env:CGO_ENABLED = 1

@@ -3,7 +3,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-$repo = 'wesm/msgvault'
+$repo = 'jamon8888/msgvault'
 $binaryName = 'msgvault.exe'
 
 function Write-Info($msg) { Write-Host $msg -ForegroundColor Green }

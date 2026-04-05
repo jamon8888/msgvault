@@ -4,7 +4,7 @@
 
 set -e
 
-REPO="wesm/msgvault"
+REPO="jamon8888/msgvault"
 BINARY_NAME="msgvault"
 
 # Colors
