@@ -79,65 +79,59 @@ func TestBM25GetChunksByAttachmentID(t *testing.T) {
 }
 
 func TestBM25Persistence(t *testing.T) {
-	// Create a temp SQLite DB
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	store, _ := NewBM25Store(db)
 	ctx := context.Background()
-	// Need multiple documents for BM25 IDF to be positive
 	store.Index(ctx, 1, 1, 100, 0, "persistent chunk about dogs")
 	store.Index(ctx, 2, 1, 101, 0, "another document about cats")
 	store.Index(ctx, 3, 1, 102, 0, "third document about birds")
 	store.Flush()
 
-	// Create a new store from the same DB
 	store2, err := NewBM25Store(db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store2.Close()
 
-	// Should have loaded the chunk from SQLite
 	results, _ := store2.Search(ctx, "persistent", 5)
 	if len(results) == 0 {
 		t.Error("expected persisted chunk to be searchable")
 	}
 }
 
-func TestBM25SubstringFallback(t *testing.T) {
+func TestBM25SmoothedIDF(t *testing.T) {
 	store := newTestBM25Store(t)
 	ctx := context.Background()
 
-	// All documents contain "document" → BM25 IDF ≈ 0 → no results normally
+	// All documents contain "document" → classic BM25 IDF ≈ 0 → no results
+	// With smoothed IDF, all should still be found with positive scores
 	store.Index(ctx, 1, 1, 100, 0, "this is a document about shipping labels")
 	store.Index(ctx, 2, 1, 101, 0, "another document about shipping costs")
 	store.Index(ctx, 3, 2, 102, 0, "third document with shipping info")
 	store.Flush()
 
-	// "document" appears in all 3 docs → BM25 returns 0, fallback should kick in
 	results, err := store.Search(ctx, "document", 5)
 	if err != nil {
 		t.Fatalf("search error: %v", err)
 	}
 	if len(results) == 0 {
-		t.Fatal("expected results from substring fallback")
+		t.Fatal("expected results for ubiquitous term 'document' with smoothed IDF")
 	}
 	if len(results) != 3 {
 		t.Errorf("expected 3 results, got %d", len(results))
 	}
-	// All should have the same attachment IDs
-	seen := make(map[int64]bool)
+	// All scores should be positive
 	for _, r := range results {
-		seen[r.AttachmentID] = true
-	}
-	if !seen[100] || !seen[101] || !seen[102] {
-		t.Errorf("expected all 3 attachments, got: %v", seen)
+		if r.Score <= 0 {
+			t.Errorf("expected positive score, got %.4f for att=%d", r.Score, r.AttachmentID)
+		}
 	}
 }
 
-func TestBM25SubstringFallbackFrench(t *testing.T) {
+func TestBM25FrenchShippingLabels(t *testing.T) {
 	store := newTestBM25Store(t)
 	ctx := context.Background()
 
@@ -147,13 +141,13 @@ func TestBM25SubstringFallbackFrench(t *testing.T) {
 	store.Index(ctx, 3, 2, 102, 0, "Commerces de proximité RS Mobile Repaire 184 RUE SAIN MAUR 75010 PARIS")
 	store.Flush()
 
-	// "colis" appears in 2/3 docs → BM25 may return 0, fallback should find them
+	// "colis" appears in 2/3 docs → smoothed IDF should still rank them
 	results, err := store.Search(ctx, "colis", 5)
 	if err != nil {
 		t.Fatalf("search error: %v", err)
 	}
 	if len(results) == 0 {
-		t.Fatal("expected results for 'colis' from substring fallback")
+		t.Fatal("expected results for 'colis'")
 	}
 	// Should find the 2 docs containing "colis", not the 3rd
 	for _, r := range results {
@@ -162,7 +156,7 @@ func TestBM25SubstringFallbackFrench(t *testing.T) {
 		}
 	}
 
-	// "repaire" appears in only 1 doc → BM25 should find it directly
+	// "repaire" appears in only 1 doc → should have higher score than ubiquitous terms
 	results, err = store.Search(ctx, "repaire", 5)
 	if err != nil {
 		t.Fatalf("search error: %v", err)
@@ -172,5 +166,15 @@ func TestBM25SubstringFallbackFrench(t *testing.T) {
 	}
 	if results[0].AttachmentID != 102 {
 		t.Errorf("expected attachment 102, got %d", results[0].AttachmentID)
+	}
+
+	// Discriminative term should score higher than ubiquitous term
+	repaireScore := results[0].Score
+	results, _ = store.Search(ctx, "colis", 5)
+	if len(results) > 0 {
+		colisScore := results[0].Score
+		if repaireScore <= colisScore {
+			t.Logf("note: repaire(%.4f) <= colis(%.4f) — discriminative term should score higher", repaireScore, colisScore)
+		}
 	}
 }

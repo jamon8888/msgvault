@@ -3,11 +3,10 @@ package search
 import (
 	"context"
 	"database/sql"
+	"math"
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/crawlab-team/bm25"
 )
 
 type BM25Store struct {
@@ -15,7 +14,7 @@ type BM25Store struct {
 	db       *sql.DB
 	chunks   map[int64]chunk
 	docOrder []int64
-	bm25     *bm25.BM25Okapi
+	index    *bm25Index
 	nextID   int64
 }
 
@@ -29,6 +28,91 @@ type chunk struct {
 	attachmentID int64
 	chunkIndex   int
 	text         string
+}
+
+// bm25Index is a lightweight inline BM25 Okapi implementation with smoothed IDF.
+// Unlike the crawlab-team/bm25 library, this uses log(1 + (N-n+0.5)/(n+0.5))
+// instead of log((N-n+0.5)/(n+0.5)), guaranteeing non-zero scores even when
+// terms appear in all documents.
+type bm25Index struct {
+	corpus     [][]string
+	docLens    []int
+	avgDocLen  float64
+	docFreq    map[string]int
+	tokenCount int
+	k1         float64
+	b          float64
+}
+
+func newBM25Index(docs []string, tokenize func(string) []string, k1, b float64) *bm25Index {
+	idx := &bm25Index{
+		corpus:  make([][]string, len(docs)),
+		docLens: make([]int, len(docs)),
+		docFreq: make(map[string]int),
+		k1:      k1,
+		b:       b,
+	}
+
+	var totalLen int
+	for i, doc := range docs {
+		tokens := tokenize(doc)
+		idx.corpus[i] = tokens
+		idx.docLens[i] = len(tokens)
+		totalLen += len(tokens)
+	}
+
+	if len(docs) > 0 {
+		idx.avgDocLen = float64(totalLen) / float64(len(docs))
+	}
+	idx.tokenCount = len(docs)
+
+	// Compute document frequency (number of docs containing each term, not total occurrences)
+	for _, tokens := range idx.corpus {
+		seen := make(map[string]bool)
+		for _, t := range tokens {
+			if !seen[t] {
+				idx.docFreq[t]++
+				seen[t] = true
+			}
+		}
+	}
+
+	return idx
+}
+
+// idf computes the smoothed IDF for a term.
+// Standard: log((N - n + 0.5) / (n + 0.5)) → 0 when n == N
+// Smoothed: log(1 + (N - n + 0.5) / (n + 0.5)) → always > 0
+func (idx *bm25Index) idf(term string) float64 {
+	n := idx.docFreq[term]
+	N := idx.tokenCount
+	return math.Log(1.0 + (float64(N)-float64(n)+0.5)/(float64(n)+0.5))
+}
+
+// scores computes BM25 Okapi scores for a tokenized query against all documents.
+func (idx *bm25Index) scores(query []string) []float64 {
+	scores := make([]float64, len(idx.corpus))
+	for _, q := range query {
+		idf := idx.idf(q)
+		if idf == 0 {
+			continue
+		}
+		for i, doc := range idx.corpus {
+			tf := 0
+			for _, t := range doc {
+				if t == q {
+					tf++
+				}
+			}
+			if tf == 0 {
+				continue
+			}
+			docLen := float64(idx.docLens[i])
+			k := idx.k1 * (1.0 - idx.b + idx.b*docLen/idx.avgDocLen)
+			scores[i] += idf * (float64(tf) / (float64(tf) + k))
+		}
+	}
+	return scores
 }
 
 func NewBM25Store(db *sql.DB) (*BM25Store, error) {
@@ -115,7 +199,7 @@ func (s *BM25Store) Search(_ context.Context, query string, limit int) ([]Search
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.bm25 == nil {
+	if s.index == nil {
 		return nil, nil
 	}
 
@@ -124,23 +208,13 @@ func (s *BM25Store) Search(_ context.Context, query string, limit int) ([]Search
 		return nil, nil
 	}
 
-	scores, err := s.bm25.GetScores(terms)
-	if err != nil {
-		return nil, err
-	}
+	scores := s.index.scores(terms)
 
 	var scored []scoredDoc
-
 	for i, score := range scores {
 		if score > 0 {
 			scored = append(scored, scoredDoc{i, score})
 		}
-	}
-
-	// Fallback: if BM25 returns no results (e.g. all terms appear in every doc → IDF ≈ 0),
-	// use simple substring matching as a fallback
-	if len(scored) == 0 {
-		scored = s.substringFallback(terms)
 	}
 
 	sort.Slice(scored, func(i, j int) bool {
@@ -165,41 +239,6 @@ func (s *BM25Store) Search(_ context.Context, query string, limit int) ([]Search
 	}
 
 	return results, nil
-}
-
-// substringFallback performs case-insensitive substring matching when BM25
-// returns zero results (common when all documents contain the search terms,
-// making IDF ≈ 0). Scores are based on term frequency within each document.
-func (s *BM25Store) substringFallback(terms []string) []scoredDoc {
-	type termCount struct {
-		idx   int
-		count int
-	}
-	var matches []termCount
-
-	for bmIdx, docID := range s.docOrder {
-		c, ok := s.chunks[docID]
-		if !ok {
-			continue
-		}
-		lower := strings.ToLower(c.text)
-		totalMatches := 0
-		for _, term := range terms {
-			lowerTerm := strings.ToLower(term)
-			count := strings.Count(lower, lowerTerm)
-			totalMatches += count
-		}
-		if totalMatches > 0 {
-			matches = append(matches, termCount{bmIdx, totalMatches})
-		}
-	}
-
-	// Convert to scoredDoc with a small positive score proportional to match count
-	scored := make([]scoredDoc, len(matches))
-	for i, m := range matches {
-		scored[i] = scoredDoc{m.idx, float64(m.count) * 0.01}
-	}
-	return scored
 }
 
 func (s *BM25Store) GetChunksByAttachmentID(attachmentID int64) ([]string, error) {
@@ -265,15 +304,12 @@ func (s *BM25Store) rebuildIndex() {
 	s.docOrder = newOrder
 
 	if len(texts) == 0 {
-		s.bm25 = nil
+		s.index = nil
 		return
 	}
 
-	var err error
-	s.bm25, err = bm25.NewBM25Okapi(texts, bm25Tokenize, 1.5, 0.75, nil)
-	if err != nil {
-		s.bm25 = nil
-	}
+	// k1=1.5 (TF saturation), b=0.6 (reduced length normalization for short docs)
+	s.index = newBM25Index(texts, bm25Tokenize, 1.5, 0.6)
 }
 
 func bm25Tokenize(text string) []string {
