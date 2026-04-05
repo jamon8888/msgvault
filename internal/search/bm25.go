@@ -19,6 +19,11 @@ type BM25Store struct {
 	nextID   int64
 }
 
+type scoredDoc struct {
+	bm25Idx int
+	score   float64
+}
+
 type chunk struct {
 	messageID    int64
 	attachmentID int64
@@ -124,16 +129,18 @@ func (s *BM25Store) Search(_ context.Context, query string, limit int) ([]Search
 		return nil, err
 	}
 
-	type scoredDoc struct {
-		bm25Idx int
-		score   float64
-	}
 	var scored []scoredDoc
 
 	for i, score := range scores {
 		if score > 0 {
 			scored = append(scored, scoredDoc{i, score})
 		}
+	}
+
+	// Fallback: if BM25 returns no results (e.g. all terms appear in every doc → IDF ≈ 0),
+	// use simple substring matching as a fallback
+	if len(scored) == 0 {
+		scored = s.substringFallback(terms)
 	}
 
 	sort.Slice(scored, func(i, j int) bool {
@@ -158,6 +165,41 @@ func (s *BM25Store) Search(_ context.Context, query string, limit int) ([]Search
 	}
 
 	return results, nil
+}
+
+// substringFallback performs case-insensitive substring matching when BM25
+// returns zero results (common when all documents contain the search terms,
+// making IDF ≈ 0). Scores are based on term frequency within each document.
+func (s *BM25Store) substringFallback(terms []string) []scoredDoc {
+	type termCount struct {
+		idx   int
+		count int
+	}
+	var matches []termCount
+
+	for bmIdx, docID := range s.docOrder {
+		c, ok := s.chunks[docID]
+		if !ok {
+			continue
+		}
+		lower := strings.ToLower(c.text)
+		totalMatches := 0
+		for _, term := range terms {
+			lowerTerm := strings.ToLower(term)
+			count := strings.Count(lower, lowerTerm)
+			totalMatches += count
+		}
+		if totalMatches > 0 {
+			matches = append(matches, termCount{bmIdx, totalMatches})
+		}
+	}
+
+	// Convert to scoredDoc with a small positive score proportional to match count
+	scored := make([]scoredDoc, len(matches))
+	for i, m := range matches {
+		scored[i] = scoredDoc{m.idx, float64(m.count) * 0.01}
+	}
+	return scored
 }
 
 func (s *BM25Store) GetChunksByAttachmentID(attachmentID int64) ([]string, error) {

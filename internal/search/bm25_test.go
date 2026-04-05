@@ -105,3 +105,72 @@ func TestBM25Persistence(t *testing.T) {
 		t.Error("expected persisted chunk to be searchable")
 	}
 }
+
+func TestBM25SubstringFallback(t *testing.T) {
+	store := newTestBM25Store(t)
+	ctx := context.Background()
+
+	// All documents contain "document" → BM25 IDF ≈ 0 → no results normally
+	store.Index(ctx, 1, 1, 100, 0, "this is a document about shipping labels")
+	store.Index(ctx, 2, 1, 101, 0, "another document about shipping costs")
+	store.Index(ctx, 3, 2, 102, 0, "third document with shipping info")
+	store.Flush()
+
+	// "document" appears in all 3 docs → BM25 returns 0, fallback should kick in
+	results, err := store.Search(ctx, "document", 5)
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results from substring fallback")
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 results, got %d", len(results))
+	}
+	// All should have the same attachment IDs
+	seen := make(map[int64]bool)
+	for _, r := range results {
+		seen[r.AttachmentID] = true
+	}
+	if !seen[100] || !seen[101] || !seen[102] {
+		t.Errorf("expected all 3 attachments, got: %v", seen)
+	}
+}
+
+func TestBM25SubstringFallbackFrench(t *testing.T) {
+	store := newTestBM25Store(t)
+	ctx := context.Background()
+
+	// Simulate real Vinted bordereaux: all contain "colis" and "poids"
+	store.Index(ctx, 1, 1, 100, 0, "Dimensions max de mon colis Poids = 30 kg max VINTED USER 75011 PARIS")
+	store.Index(ctx, 2, 1, 101, 0, "Dimensions max de mon colis Poids = 20 kg max VINTED USER 75011 PARIS")
+	store.Index(ctx, 3, 2, 102, 0, "Commerces de proximité RS Mobile Repaire 184 RUE SAIN MAUR 75010 PARIS")
+	store.Flush()
+
+	// "colis" appears in 2/3 docs → BM25 may return 0, fallback should find them
+	results, err := store.Search(ctx, "colis", 5)
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results for 'colis' from substring fallback")
+	}
+	// Should find the 2 docs containing "colis", not the 3rd
+	for _, r := range results {
+		if r.AttachmentID == 102 {
+			t.Errorf("attachment 102 should not match 'colis', got: %s", r.ChunkText[:40])
+		}
+	}
+
+	// "repaire" appears in only 1 doc → BM25 should find it directly
+	results, err = store.Search(ctx, "repaire", 5)
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for 'repaire', got %d", len(results))
+	}
+	if results[0].AttachmentID != 102 {
+		t.Errorf("expected attachment 102, got %d", results[0].AttachmentID)
+	}
+}
