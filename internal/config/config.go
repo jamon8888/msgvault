@@ -184,8 +184,12 @@ type VectorConfig struct {
 }
 
 // DefaultHome returns the default msgvault home directory.
-// Respects MSGVAULT_HOME environment variable and expands ~ in its value.
+// Respects HACIENDA_HOME (primary) and MSGVAULT_HOME (fallback) environment variables.
+// If neither is set, defaults to ~/.hacienda. Expands ~ in the value.
 func DefaultHome() string {
+	if h := os.Getenv("HACIENDA_HOME"); h != "" {
+		return expandPath(h)
+	}
 	if h := os.Getenv("MSGVAULT_HOME"); h != "" {
 		return expandPath(h)
 	}

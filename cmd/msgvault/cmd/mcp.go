@@ -16,7 +16,7 @@ var mcpNoSQLiteScanner bool
 
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
-	Short: "Run MCP server for Claude Desktop integration",
+	Short: "Run MCP server for AI assistant integration",
 	Long: `Start an MCP (Model Context Protocol) server over stdio.
 
 This allows Claude Desktop (or any MCP client) to query your email archive
@@ -26,8 +26,8 @@ aggregate, and stage_deletion.
 Add to Claude Desktop config:
   {
     "mcpServers": {
-      "msgvault": {
-        "command": "msgvault",
+      "hacienda": {
+        "command": "hacienda",
         "args": ["mcp"]
       }
     }

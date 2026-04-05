@@ -1,11 +1,11 @@
 #!/bin/bash
-# msgvault installer
-# Usage: curl -fsSL https://msgvault.io/install.sh | bash
+# Hacienda installer
+# Usage: curl -fsSL https://hacienda.io/install.sh | bash
 
 set -e
 
 REPO="jamon8888/msgvault"
-BINARY_NAME="msgvault"
+BINARY_NAME="hacienda"
 
 # Colors
 RED='\033[0;31m'
@@ -22,7 +22,7 @@ detect_os() {
     case "$(uname -s)" in
         Darwin) echo "darwin" ;;
         Linux) echo "linux" ;;
-        *) error "Unsupported OS: $(uname -s). msgvault supports macOS and Linux." ;;
+        *) error "Unsupported OS: $(uname -s). Hacienda supports macOS and Linux." ;;
     esac
 }
 
@@ -161,7 +161,7 @@ install_from_release() {
 
 # Main
 main() {
-    info "Installing msgvault..."
+    info "Installing Hacienda..."
     echo
 
     local os=$(detect_os)
@@ -190,10 +190,10 @@ main() {
     fi
 
     echo "Get started:"
-    echo "  msgvault init-db"
-    echo "  msgvault add-account you@gmail.com"
-    echo "  msgvault sync-full you@gmail.com --limit 100"
-    echo "  msgvault tui"
+    echo "  Hacienda init-db"
+    echo "  Hacienda add-account you@gmail.com"
+    echo "  Hacienda sync-full you@gmail.com --limit 100"
+    echo "  Hacienda tui"
 }
 
 main "$@"

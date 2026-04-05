@@ -1,10 +1,10 @@
-# msgvault installer for Windows
-# Usage: powershell -ExecutionPolicy ByPass -c "irm https://msgvault.io/install.ps1 | iex"
+# Hacienda installer for Windows
+# Usage: powershell -ExecutionPolicy ByPass -c "irm https://hacienda.io/install.ps1 | iex"
 
 $ErrorActionPreference = 'Stop'
 
 $repo = 'jamon8888/msgvault'
-$binaryName = 'msgvault.exe'
+$binaryName = 'hacienda.exe'
 
 function Write-Info($msg) { Write-Host $msg -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host $msg -ForegroundColor Yellow }
@@ -79,7 +79,7 @@ function Get-InstallDir {
     if ($env:MSGVAULT_INSTALL_DIR) {
         return $env:MSGVAULT_INSTALL_DIR
     }
-    return Join-Path $env:USERPROFILE '.msgvault\bin'
+    return Join-Path $env:USERPROFILE '.hacienda\bin'
 }
 
 function Add-ToPath($dir) {
@@ -105,24 +105,24 @@ function Add-ToPath($dir) {
 }
 
 function Install-Msgvault {
-    Write-Info "Installing msgvault..."
-    Write-Host ""
+        Write-Info "Installing Hacienda..."
+        Write-Host ""
 
-    $arch = Get-Architecture
-    Write-Info "Platform: windows/$arch"
+        $arch = Get-Architecture
+        Write-Info "Platform: windows/$arch"
 
-    # Handle unsupported architectures
-    if ($arch -eq '386') {
-        Write-Err "Error: 32-bit Windows is not supported."
-        Write-Err "msgvault requires 64-bit Windows (amd64 or arm64)."
-        exit 1
-    }
+        # Handle unsupported architectures
+        if ($arch -eq '386') {
+            Write-Err "Error: 32-bit Windows is not supported."
+            Write-Err "Hacienda requires 64-bit Windows (amd64 or arm64)."
+            exit 1
+        }
 
-    $version = Get-LatestVersion
-    Write-Info "Latest version: $version"
+        $version = Get-LatestVersion
+        Write-Info "Latest version: $version"
 
-    $versionNum = $version.TrimStart('v')
-    $archiveName = "msgvault_${versionNum}_windows_${arch}.zip"
+        $versionNum = $version.TrimStart('v')
+        $archiveName = "hacienda_${versionNum}_windows_${arch}.zip"
     $downloadUrl = "https://github.com/$repo/releases/download/$version/$archiveName"
 
     $installDir = Get-InstallDir
@@ -135,7 +135,7 @@ function Install-Msgvault {
     }
 
     # Create temp directory
-    $tmpDir = Join-Path $env:TEMP "msgvault-install-$(Get-Random)"
+    $tmpDir = Join-Path $env:TEMP "hacienda-install-$(Get-Random)"
     New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 
     try {
@@ -246,10 +246,10 @@ function Install-Msgvault {
 
         # Get started instructions
         Write-Host "Get started:"
-        Write-Host "  msgvault init-db"
-        Write-Host "  msgvault add-account you@gmail.com"
-        Write-Host "  msgvault sync-full you@gmail.com --limit 100"
-        Write-Host "  msgvault tui"
+        Write-Host "  Hacienda init-db"
+        Write-Host "  Hacienda add-account you@gmail.com"
+        Write-Host "  Hacienda sync-full you@gmail.com --limit 100"
+        Write-Host "  Hacienda tui"
 
     } finally {
         # Cleanup temp directory

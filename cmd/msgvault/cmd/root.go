@@ -26,10 +26,10 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "msgvault",
-	Short: "Offline email archive tool",
-	Long: `msgvault is an offline email archive tool that exports and stores
-email data locally with full-text search capabilities.
+	Use:   "hacienda",
+	Short: "Offline email archive and intelligence tool",
+	Long: `hacienda is an offline email archive and intelligence tool that exports and stores
+email data locally with full-text search, semantic search, and PII-filtered AI access.
 
 This is the Go implementation providing sync, search, and TUI functionality
 in a single binary.`,
@@ -85,8 +85,8 @@ func oauthSetupHint() string {
 		configPath = cfg.ConfigFilePath()
 	}
 	hint := fmt.Sprintf(`
-To use msgvault, you need a Google Cloud OAuth credential:
-  1. Follow the setup guide: https://msgvault.io/guides/oauth-setup/
+To use Hacienda, you need a Google Cloud OAuth credential:
+  1. Follow the setup guide: https://hacienda.io/guides/oauth-setup/
   2. Download the client_secret.json file
   3. Create or edit %s:
        [oauth]
@@ -137,7 +137,7 @@ To use this file, add to %s:
   client_secrets = %q
 
 Or copy the file to your msgvault home directory:
-  cp %q ~/.msgvault/client_secret.json`, matches[0], configPath, matches[0], matches[0])
+  cp %q ~/.hacienda/client_secret.json`, matches[0], configPath, matches[0], matches[0])
 		}
 	}
 	return ""
@@ -224,8 +224,8 @@ func getTokenSourceWithReauth(
 				"re-authorize %s: %w\n"+
 					"If this account uses an alias, remove "+
 					"and re-add with the primary address:\n"+
-					"  msgvault remove-account %s --type gmail\n"+
-					"  msgvault add-account %s",
+					"  hacienda remove-account %s --type gmail\n"+
+					"  hacienda add-account %s",
 				email, authErr,
 				mismatch.Expected, mismatch.Actual,
 			)
@@ -277,8 +277,8 @@ func sourceOAuthApp(src *store.Source) string {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.msgvault/config.toml)")
-	rootCmd.PersistentFlags().StringVar(&homeDir, "home", "", "home directory (overrides MSGVAULT_HOME)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.hacienda/config.toml)")
+	rootCmd.PersistentFlags().StringVar(&homeDir, "home", "", "home directory (overrides HACIENDA_HOME)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	rootCmd.PersistentFlags().BoolVar(&useLocal, "local", false, "force local database (override remote config)")
 }

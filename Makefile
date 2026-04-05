@@ -1,4 +1,4 @@
-# Makefile for msgvault
+# Makefile for Hacienda Mail
 
 .DEFAULT_GOAL := help
 
@@ -16,19 +16,19 @@ LDFLAGS_RELEASE := $(LDFLAGS) -s -w
 
 # Build the binary (debug)
 build:
-	CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o msgvault ./cmd/msgvault
-	@chmod +x msgvault
+	CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o hacienda ./cmd/msgvault
+	@chmod +x hacienda
 
 # Build with optimizations (release)
 build-release:
-	CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS_RELEASE)" -trimpath -o msgvault ./cmd/msgvault
-	@chmod +x msgvault
+	CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS_RELEASE)" -trimpath -o hacienda ./cmd/msgvault
+	@chmod +x hacienda
 
 # Install to ~/.local/bin, $GOBIN, or $GOPATH/bin
 install:
 	@if [ -d "$(HOME)/.local/bin" ]; then \
-		echo "Installing to ~/.local/bin/msgvault"; \
-		CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o "$(HOME)/.local/bin/msgvault" ./cmd/msgvault; \
+		echo "Installing to ~/.local/bin/hacienda"; \
+		CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o "$(HOME)/.local/bin/hacienda" ./cmd/msgvault; \
 	else \
 		INSTALL_DIR="$${GOBIN:-$$(go env GOBIN)}"; \
 		if [ -z "$$INSTALL_DIR" ]; then \
@@ -36,13 +36,13 @@ install:
 			INSTALL_DIR="$$GOPATH_FIRST/bin"; \
 		fi; \
 		mkdir -p "$$INSTALL_DIR"; \
-		echo "Installing to $$INSTALL_DIR/msgvault"; \
-		CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o "$$INSTALL_DIR/msgvault" ./cmd/msgvault; \
+		echo "Installing to $$INSTALL_DIR/hacienda"; \
+		CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o "$$INSTALL_DIR/hacienda" ./cmd/msgvault; \
 	fi
 
 # Clean build artifacts
 clean:
-	rm -f msgvault msgvault.exe mimeshootout
+	rm -f hacienda msgvault.exe mimeshootout
 	rm -rf bin/
 
 # Run tests
